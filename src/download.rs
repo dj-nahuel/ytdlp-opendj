@@ -251,11 +251,20 @@ struct Job {
     started: bool,
 }
 
+/// A list downloaded whole: openDJ follows it by its own key, while its
+/// tracks download as jobs of their own.
+struct Folder {
+    key: String,
+    children: Vec<String>,
+    told: Option<Progress>,
+}
+
 /// All downloads, queued, running and finished.
 #[derive(Default)]
 pub struct Downloads {
     jobs: Vec<Job>,
     queue: VecDeque<String>,
+    folders: Vec<Folder>,
 }
 
 impl Downloads {
@@ -282,6 +291,84 @@ impl Downloads {
             self.queue.push_back(item.key.clone());
         }
         Ok(())
+    }
+
+    /// The tracks of list `key`, when it's a list.
+    fn children(&self, key: &str) -> Option<Vec<String>> {
+        self.folders
+            .iter()
+            .find(|f| f.key == key)
+            .map(|f| f.children.clone())
+    }
+
+    /// Queues list `key`'s `tracks` for downloading into a folder named
+    /// `name` in `dir`, followed as one download by `key`.
+    pub fn add_folder(
+        &mut self,
+        key: &str,
+        name: &str,
+        tracks: &[Found],
+        dir: &Path,
+    ) -> Result<(), String> {
+        if tracks.is_empty() {
+            return Err(format!("{name} has no tracks yt-dlp can read"));
+        }
+        let sub = safe(name);
+        let dir = if sub.is_empty() {
+            dir.to_path_buf()
+        } else {
+            dir.join(sub)
+        };
+        self.add(tracks, &dir)?;
+        self.folders.retain(|f| f.key != key);
+        self.folders.push(Folder {
+            key: key.to_string(),
+            children: tracks.iter().map(|t| t.key.clone()).collect(),
+            told: None,
+        });
+        Ok(())
+    }
+
+    /// How list `folder` is getting on, from its tracks.
+    fn folder_progress(&self, folder: &Folder) -> Progress {
+        let steps: Vec<Step> = folder
+            .children
+            .iter()
+            .filter_map(|k| self.jobs.iter().find(|j| &j.key == k))
+            .filter_map(|j| j.live.lock().unwrap().step.clone())
+            .collect();
+        let ended = |s: &Step| matches!(s, Step::Done(_) | Step::Failed(_));
+        if !steps.is_empty() && steps.iter().all(ended) {
+            let files: Vec<PathBuf> = steps
+                .iter()
+                .filter_map(|s| match s {
+                    Step::Done(p) => Some(p.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !files.is_empty() {
+                return Progress::Done(files);
+            }
+            return match steps.iter().find_map(|s| match s {
+                Step::Failed(why) => Some(why.clone()),
+                _ => None,
+            }) {
+                Some(why) => Progress::Failed(why),
+                None => Progress::Failed("Nothing downloaded".into()),
+            };
+        }
+        if steps.iter().all(|s| *s == Step::Queued) {
+            return Progress::Queued;
+        }
+        let done: f32 = steps
+            .iter()
+            .map(|s| match s {
+                Step::Queued => 0.0,
+                Step::Running(f) => *f,
+                _ => 1.0,
+            })
+            .sum();
+        Progress::Running(done / steps.len().max(1) as f32)
     }
 
     /// Starts queued downloads while fewer than [`AT_ONCE`] run, with
@@ -322,6 +409,20 @@ impl Downloads {
                 });
             }
         }
+        let now: Vec<Progress> = self
+            .folders
+            .iter()
+            .map(|f| self.folder_progress(f))
+            .collect();
+        for (folder, now) in self.folders.iter_mut().zip(now) {
+            if folder.told.as_ref() != Some(&now) {
+                folder.told = Some(now.clone());
+                out.push(DownloadUpdate {
+                    key: folder.key.clone(),
+                    progress: now,
+                });
+            }
+        }
         out
     }
 
@@ -347,6 +448,12 @@ impl Downloads {
 
     /// Stops a queued or running download.
     pub fn cancel(&mut self, key: &str) -> Result<(), String> {
+        if let Some(children) = self.children(key) {
+            for child in children {
+                let _ = self.cancel(&child);
+            }
+            return Ok(());
+        }
         let job = self
             .jobs
             .iter()
@@ -364,6 +471,17 @@ impl Downloads {
 
     /// Tries a failed download again.
     pub fn retry(&mut self, key: &str) -> Result<(), String> {
+        if let Some(children) = self.children(key) {
+            for child in children {
+                let failed = self.jobs.iter().any(|j| {
+                    j.key == child && matches!(j.live.lock().unwrap().step, Some(Step::Failed(_)))
+                });
+                if failed {
+                    self.retry(&child)?;
+                }
+            }
+            return Ok(());
+        }
         let job = self
             .jobs
             .iter()
@@ -630,6 +748,43 @@ printf 'not really mp3' > "$f"; echo "ODJFILE 18 NA $f""#,
         assert!(out.join("Two.mp3").is_file());
         // Nothing new since.
         assert!(d.progress().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn downloads_a_list_whole() {
+        let dir = std::env::temp_dir().join(format!("ytdlp-opendj-list-{}", std::process::id()));
+        let out = dir.join("out");
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = fake(
+            &dir,
+            r#"while [ "$1" != "-o" ]; do shift; done; t="$2"; f="${t%.%(ext)s}.m4a"
+printf 'x' > "$f"; echo "ODJFILE 140 129.5 $f""#,
+        );
+        let mut d = Downloads::default();
+        assert!(d.add_folder("list:u", "Warm-up", &[], &out).is_err());
+        d.add_folder(
+            "list:u",
+            "Warm-up",
+            &[item("yt:a", "A", "One"), item("yt:b", "B", "Two")],
+            &out,
+        )
+        .unwrap();
+        let first = d.progress();
+        assert!(first
+            .iter()
+            .any(|u| u.key == "list:u" && u.progress == Progress::Queued));
+        settle(&mut d, &program, Duration::from_secs(5));
+        let done = d.progress();
+        let list = done.iter().find(|u| u.key == "list:u").unwrap();
+        assert_eq!(
+            list.progress,
+            Progress::Done(vec![
+                out.join("Warm-up").join("A - One.m4a"),
+                out.join("Warm-up").join("B - Two.m4a")
+            ])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
