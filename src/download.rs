@@ -140,13 +140,19 @@ pub fn args(site: Site, url: &str, dir: &Path, base: &str) -> Vec<String> {
              %(progress.total_bytes_estimate)s %(progress.speed)s"
         ),
         "--print".into(),
-        format!("after_move:{FILE}%(filepath)s"),
+        format!("after_move:{FILE}%(format_id)s %(filepath)s"),
         // --print alone would skip the download.
         "--no-simulate".into(),
         "-o".into(),
         template.to_string_lossy().into_owned(),
         url.to_string(),
     ]
+}
+
+/// The finished file's line: the format yt-dlp picked, and the file.
+pub fn parse_file(line: &str) -> Option<(String, PathBuf)> {
+    let (format, path) = line.strip_prefix(FILE)?.trim().split_once(' ')?;
+    Some((format.to_string(), PathBuf::from(path)))
 }
 
 /// A progress line: how far (0..1) and how fast (bytes a second).
@@ -174,7 +180,9 @@ pub fn speed(bytes_per_sec: f64) -> String {
 /// Why a download failed, in words for the Downloads list.
 pub fn explain(stderr: &str) -> String {
     let last = crate::search::last_error(stderr);
-    if last.contains("Requested format is not available") {
+    if let Some(why) = crate::premium::explain(&last) {
+        why
+    } else if last.contains("Requested format is not available") {
         "No audio openDJ can play without converting (only Opus): not downloaded".into()
     } else {
         last
@@ -204,6 +212,8 @@ impl Step {
 struct Live {
     step: Option<Step>,
     speed: Option<f64>,
+    /// The format yt-dlp picked, once done.
+    format: Option<String>,
     child: Option<Child>,
     cancelled: bool,
 }
@@ -294,7 +304,8 @@ impl Downloads {
         out
     }
 
-    /// Speed of each download running.
+    /// Speed of each download running, and the bitrate of each YouTube
+    /// download done.
     pub fn notes(&self) -> Vec<(String, String)> {
         self.jobs
             .iter()
@@ -302,6 +313,11 @@ impl Downloads {
                 let live = j.live.lock().unwrap();
                 match (&live.step, live.speed) {
                     (Some(Step::Running(_)), Some(s)) if s > 0.0 => Some((j.key.clone(), speed(s))),
+                    (Some(Step::Done(_)), _) if j.site == Site::YouTube => live
+                        .format
+                        .as_deref()
+                        .and_then(crate::premium::note)
+                        .map(|n| (j.key.clone(), n)),
                     _ => None,
                 }
             })
@@ -345,6 +361,9 @@ fn start(job: &mut Job, program: &Path) {
     }
     let base = free_base(&job.dir, &base_name(&job.item));
     let mut cmd = crate::tool::command(program);
+    if job.site == Site::YouTube {
+        cmd.args(crate::premium::args());
+    }
     cmd.args(args(job.site, &job.url, &job.dir, &base))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -375,8 +394,9 @@ fn start(job: &mut Job, program: &Path) {
         let mut file: Option<PathBuf> = None;
         if let Some(out) = stdout {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if let Some(path) = line.strip_prefix(FILE) {
-                    file = Some(PathBuf::from(path.trim()));
+                if let Some((format, path)) = parse_file(&line) {
+                    live.lock().unwrap().format = Some(format);
+                    file = Some(path);
                 } else if let Some((f, s)) = parse_progress(&line) {
                     let mut l = live.lock().unwrap();
                     l.step = Some(Step::Running(f));
@@ -518,6 +538,15 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_finished_file() {
+        assert_eq!(
+            parse_file("ODJFILE 141 /m/A - B (2).m4a"),
+            Some(("141".into(), PathBuf::from("/m/A - B (2).m4a")))
+        );
+        assert_eq!(parse_file("ODJPROG 1 2"), None);
+    }
+
+    #[test]
     fn explains_failures() {
         assert!(explain(
             "ERROR: [youtube] x: Requested format is not available. Use --list-formats"
@@ -541,7 +570,7 @@ mod tests {
             &dir,
             r#"while [ "$1" != "-o" ]; do shift; done; t="$2"; f="${t%.%(ext)s}.mp3"
 echo "ODJPROG 10 100 NA 2000000"; echo "ODJPROG 100 100 NA NA"
-printf 'not really mp3' > "$f"; echo "ODJFILE $f""#,
+printf 'not really mp3' > "$f"; echo "ODJFILE 18 $f""#,
         );
         let mut d = Downloads::default();
         d.add(
