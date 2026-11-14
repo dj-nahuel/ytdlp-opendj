@@ -103,22 +103,36 @@ pub fn note(site: Site, picked: &Picked) -> Option<String> {
 /// `error` says.
 pub fn explain(error: &str) -> Option<String> {
     let lower = error.to_ascii_lowercase();
-    if !lower.contains("cookie") {
+    let browser = BROWSER.lock().unwrap().clone().unwrap_or_default();
+    let browser = crate::signin::title(browser.split(':').next().unwrap_or_default());
+    // YouTube's bot check says "use --cookies-from-browser" too: that's
+    // not a sign-in that couldn't be read.
+    if lower.contains("confirm you") {
         return None;
     }
-    let browser = BROWSER.lock().unwrap().clone().unwrap_or_default();
-    let mut why = format!("Couldn't read your sign-in from {browser}.");
-    if lower.contains("operation not permitted") || lower.contains("permission denied") {
-        why.push_str(
-            " On a Mac, Safari's sign-ins need Full Disk Access for openDJ \
-             (System Settings → Privacy & Security).",
-        );
-    } else if lower.contains("could not find") {
-        why.push_str(" Is it installed, and signed in to YouTube or SoundCloud?");
-    } else if lower.contains("decrypt") || lower.contains("keyring") || lower.contains("keychain") {
-        why.push_str(" Allow openDJ when your computer asks for the browser's safe storage.");
+    let reading = lower.contains("cookies database")
+        || lower.contains("cookies.binarycookies")
+        || lower.contains("failed to decrypt")
+        || lower.contains("keyring")
+        || lower.contains("keychain")
+        || lower.contains("unsupported browser");
+    if !reading {
+        return None;
     }
-    Some(why)
+    Some(
+        if lower.contains("operation not permitted") || lower.contains("permission denied") {
+            format!("{browser} needs Full Disk Access for openDJ (System Settings › Privacy)")
+        } else if lower.contains("could not find") {
+            format!("No sign-in found in {browser}")
+        } else if lower.contains("decrypt")
+            || lower.contains("keyring")
+            || lower.contains("keychain")
+        {
+            format!("Allow openDJ to read {browser}'s sign-in when asked")
+        } else {
+            format!("Couldn't read {browser}'s sign-in")
+        },
+    )
 }
 
 #[cfg(test)]
@@ -180,15 +194,18 @@ mod tests {
             .unwrap()
             .contains("Go+ quality"));
         assert_eq!(note(Site::SoundCloud, &p("download", None)), None);
-        assert!(explain("Operation not permitted: Cookies.binarycookies")
-            .unwrap()
-            .contains("Full Disk Access"));
+        assert_eq!(
+            explain("[Errno 1] Operation not permitted: '/Users/x/Library/Cookies/Cookies.binarycookies'")
+                .as_deref(),
+            Some("Safari needs Full Disk Access for openDJ (System Settings › Privacy)")
+        );
+        assert_eq!(
+            explain("[youtube] x: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies"),
+            None
+        );
         assert_eq!(
             explain("ERROR: could not find safari cookies database").as_deref(),
-            Some(
-                "Couldn't read your sign-in from safari. Is it installed, and signed in to \
-                 YouTube or SoundCloud?"
-            )
+            Some("No sign-in found in Safari")
         );
         assert_eq!(explain("Video unavailable"), None);
         set(None);

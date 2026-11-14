@@ -203,6 +203,8 @@ pub fn explain(stderr: &str) -> String {
     let last = crate::search::last_error(stderr);
     if let Some(why) = crate::premium::explain(&last) {
         why
+    } else if last.contains("confirm you") {
+        "YouTube's bot check: switch on Use my browser's sign-in, or retry later".into()
     } else if last.contains("Requested format is not available") {
         "No audio openDJ can play without converting (only Opus): not downloaded".into()
     } else {
@@ -704,6 +706,10 @@ mod tests {
 
     #[test]
     fn explains_failures() {
+        assert!(explain(
+            "ERROR: [youtube] x: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies"
+        )
+        .starts_with("YouTube's bot check"));
         assert!(explain(
             "ERROR: [youtube] x: Requested format is not available. Use --list-formats"
         )
