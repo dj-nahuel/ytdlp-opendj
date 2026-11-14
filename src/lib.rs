@@ -300,16 +300,16 @@ impl Plugin for YtDlp {
             Setting::new(
                 "premium_browser",
                 SettingKind::Text,
-                "YouTube Premium browser",
-                "With YouTube Premium, downloads come at 256 kbps instead of 128. Type the \
-                 browser you're signed in to YouTube with: safari, chrome, firefox, brave, \
-                 edge, opera or vivaldi (add :Profile 2 for another Chrome profile). yt-dlp \
-                 reads the sign-in from it for each YouTube download; your password never \
-                 reaches the add-on. Searches and previews stay signed out. On a Mac, Safari \
-                 needs Full Disk Access for openDJ, and Chrome-type browsers ask to unlock \
-                 their safe storage: choose Always Allow. Downloading signed in is against \
-                 YouTube's terms and could get the account flagged. Leave empty to stay \
-                 signed out.",
+                "Premium / Go+ browser",
+                "With YouTube Premium or SoundCloud Go+, downloads come at 256 kbps instead \
+                 of 128. Type the browser you're signed in to them with: safari, chrome, \
+                 firefox, brave, edge, opera or vivaldi (add :Profile 2 for another Chrome \
+                 profile). yt-dlp reads the sign-in from it for each YouTube and SoundCloud \
+                 download; your password never reaches the add-on. Searches and previews \
+                 stay signed out. On a Mac, Safari needs Full Disk Access for openDJ, and \
+                 Chrome-type browsers ask to unlock their safe storage: choose Always Allow. \
+                 Downloading signed in is against both sites' terms and could get the account \
+                 flagged. Leave empty to stay signed out.",
             ),
             Setting::new(
                 // openDJ's `source::DOWNLOAD_FOLDER`.
@@ -323,7 +323,7 @@ impl Plugin for YtDlp {
                 "about",
                 SettingKind::Note,
                 "About these downloads",
-                "Audio from YouTube and SoundCloud is lossy (128 kbps, 256 with Premium). Use it for \
+                "Audio from YouTube and SoundCloud is lossy (128 kbps, 256 with Premium or Go+). Use it for \
                  tracks you can't buy, and buy a proper copy when one comes out.",
             ),
         ]
@@ -550,7 +550,7 @@ impl SearchSource for YtDlp {
         let mut page = page(&state, &self.deno.state(), broken, SystemTime::now());
         page.sections[0]
             .rows
-            .push(("YouTube Premium".to_string(), premium_line(&self.premium)));
+            .push(("Premium / Go+".to_string(), premium_line(&self.premium)));
         Some(page)
     }
 }
