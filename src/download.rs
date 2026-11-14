@@ -530,13 +530,7 @@ mod tests {
 
     /// A stand-in yt-dlp writing a file where `-o` says, with progress.
     #[cfg(unix)]
-    fn fake(dir: &Path, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let fake = dir.join("yt-dlp");
-        std::fs::write(&fake, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        fake
-    }
+    use crate::testutil::fake;
 
     #[cfg(unix)]
     #[test]

@@ -21,9 +21,13 @@ use opendj_plugins::source::{
 use opendj_plugins::{Manifest, Plugin, PluginConfig, PluginError, Setting, SettingKind};
 
 pub mod download;
+pub mod preview;
 pub mod search;
 pub mod tags;
 pub mod tool;
+
+#[cfg(all(test, unix))]
+mod testutil;
 
 use download::Downloads;
 use search::{Shared, Site};
@@ -60,6 +64,7 @@ pub struct YtDlp {
     searches: HashMap<String, Search>,
     next: u64,
     downloads: Downloads,
+    preview: Option<preview::Preview>,
 }
 
 impl Default for YtDlp {
@@ -77,6 +82,7 @@ impl YtDlp {
             searches: HashMap::new(),
             next: 0,
             downloads: Downloads::default(),
+            preview: None,
         }
     }
 
@@ -368,6 +374,35 @@ impl SearchSource for YtDlp {
         self.downloads.retry(key).map_err(PluginError::Network)?;
         self.downloads.pump(self.tool.program().as_deref());
         Ok(())
+    }
+
+    fn previews(&self) -> bool {
+        true
+    }
+
+    fn preview(&mut self, _id: &str, item: &Found) -> Result<(), PluginError> {
+        self.stop_preview();
+        let program = self
+            .tool
+            .program()
+            .ok_or_else(|| PluginError::Network(self.line()))?;
+        let p = preview::Preview::start(&program, &item.key, &self.dir.join("preview"))
+            .map_err(PluginError::Network)?;
+        self.preview = Some(p);
+        Ok(())
+    }
+
+    fn preview_file(&mut self) -> Result<Option<PathBuf>, PluginError> {
+        match self.preview.as_mut() {
+            Some(p) => p.file().map_err(PluginError::Network),
+            None => Ok(None),
+        }
+    }
+
+    fn stop_preview(&mut self) {
+        if let Some(p) = self.preview.take() {
+            p.stop();
+        }
     }
 
     fn status(&mut self) -> Option<StatusPage> {

@@ -19,6 +19,12 @@ pub const PER_SITE: usize = 15;
 /// Said of a result from YouTube's own artist channel (" - Topic"): the
 /// released audio, not a video's soundtrack.
 pub const OFFICIAL: &str = "official audio";
+/// Bytes a second assumed for a result's size before it's downloaded: a
+/// little under the 128 kbps most of them are, since openDJ's preview
+/// player reads on past a size that was too small but waits at the end of
+/// one that was too big.
+pub const ASSUMED_BYTES_PER_SEC: f64 = 15_000.0;
+
 /// Results asked for each song of a playlist.
 pub const PER_SONG: usize = 3;
 /// Songs of a playlist looked up at once.
@@ -206,11 +212,13 @@ pub fn parse(site: Site, line: &str) -> Option<Found> {
     if let Some(n) = v["view_count"].as_u64() {
         from.push_str(&format!(" · {}", plays(n)));
     }
+    let duration = v["duration"].as_f64().unwrap_or(0.0);
     Some(Found {
         key: format!("{}:{}", site.tag(), id),
+        size: (duration * ASSUMED_BYTES_PER_SEC) as u64,
         artist,
         title,
-        duration: v["duration"].as_f64().unwrap_or(0.0),
+        duration,
         // What downloads take: YouTube's AAC stream, the others' MP3.
         format: match site {
             Site::YouTube => "M4A".into(),
@@ -471,6 +479,7 @@ mod tests {
         assert_eq!(f.key, "yt:abc123");
         assert_eq!((f.artist.as_str(), f.title.as_str()), ("Bonobo", "Kerala"));
         assert_eq!(f.duration, 245.0);
+        assert_eq!(f.size, 3_675_000);
         assert_eq!(f.from, "YouTube · Ninja Tune · 1.2M plays");
         assert_eq!(f.cover_url, "https://i.ytimg.com/vi/abc123/hqdefault.jpg");
         assert!(!f.folder);
@@ -522,18 +531,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runs_a_search_and_collects_results() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("ytdlp-opendj-search-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let fake = dir.join("yt-dlp");
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\necho '{\"id\":\"a\",\"title\":\"A - One\",\"channel\":\"c\"}'\n\
+        let fake = crate::testutil::fake(
+            &dir,
+            "echo '{\"id\":\"a\",\"title\":\"A - One\",\"channel\":\"c\"}'\n\
              echo 'junk'\necho '{\"id\":\"b\",\"title\":\"Two\",\"channel\":\"B - Topic\"}'\n\
-             echo 'ERROR: late' >&2\nexit 1\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+             echo 'ERROR: late' >&2\nexit 1",
+        );
         let s = spawn(&fake, Site::YouTube, "q");
         for _ in 0..200 {
             if s.lock().unwrap().done {
@@ -635,18 +640,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn looks_up_each_song() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("ytdlp-opendj-songs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let fake = dir.join("yt-dlp");
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\nfor a; do q=\"$a\"; done\n\
+        let fake = crate::testutil::fake(
+            &dir,
+            "for a; do q=\"$a\"; done\n\
              case \"$q\" in *Missing*) exit 0;; esac\n\
-             echo \"{\\\"id\\\":\\\"v\\\",\\\"title\\\":\\\"${q#ytsearch3:}\\\",\\\"channel\\\":\\\"c\\\"}\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+             echo \"{\\\"id\\\":\\\"v\\\",\\\"title\\\":\\\"${q#ytsearch3:}\\\",\\\"channel\\\":\\\"c\\\"}\"",
+        );
         let songs = vec![
             "A - One".to_string(),
             "B - Missing".into(),

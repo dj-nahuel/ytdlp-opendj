@@ -20,8 +20,8 @@ The add-on is being built in steps:
 | 2 | Search YouTube and SoundCloud | done |
 | 3 | Download audio into `Downloaded/YouTube` | done |
 | 4 | Pasted links and "Add to Downloads", hearthis.at | done |
-| 5 | Hear a result before downloading | next |
-| 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | |
+| 5 | Hear a result before downloading | done |
+| 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | next |
 | 7 | YouTube Premium sign-in for 256 kbps audio | |
 
 Paste a YouTube, YouTube Music, SoundCloud or hearthis.at link into the
@@ -29,6 +29,10 @@ search box to list that track, or every track of a playlist or set (up to
 200). A playlist openDJ sends with its songs (as from "Add to Downloads")
 has each song looked up on YouTube, three results each, released audio
 from the artist's own channel first, so "Tick best of each" picks those.
+
+The play button on a result plays it while it streams in, from a file in
+the add-on's folder that's removed when you stop. Sizes shown before
+downloading are estimates from the length.
 
 Downloads are the audio as the site sends it, with no converting, so no
 ffmpeg is needed: AAC from YouTube (openDJ can't play YouTube's Opus),
