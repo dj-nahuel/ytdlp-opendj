@@ -28,6 +28,7 @@ pub mod kind;
 pub mod premium;
 pub mod preview;
 pub mod search;
+pub mod signin;
 pub mod tags;
 pub mod tool;
 
@@ -64,9 +65,14 @@ pub struct YtDlp {
     /// Whether to fetch Deno for full YouTube support.
     use_deno: bool,
     health: Health,
-    /// The browser YouTube downloads read a Premium sign-in from, or why
-    /// the name typed in Settings isn't one.
-    premium: Result<Option<String>, String>,
+    /// Whether to use the browser's sign-in ("Use my browser's sign-in").
+    use_signin: bool,
+    /// The browser to read it from: one named in older settings, else the
+    /// default browser.
+    browser: Option<String>,
+    signin: signin::SignIn,
+    /// Whether a sign-in was handed to downloads, to take back when off.
+    handed: std::cell::Cell<bool>,
     /// SoundCloud: the DJ's profile page, whose likes and sets are listed.
     profile: Option<String>,
 }
@@ -86,7 +92,10 @@ impl YtDlp {
             deno: Deno::default(),
             use_deno: true,
             health: Health::default(),
-            premium: Ok(None),
+            use_signin: false,
+            browser: None,
+            signin: signin::SignIn::default(),
+            handed: std::cell::Cell::new(false),
             profile: None,
         }
     }
@@ -100,9 +109,41 @@ impl YtDlp {
             _ => "",
         };
         let line = self.health.line(version).unwrap_or_else(|| line(&state));
-        match &self.premium {
-            Err(why) => format!("{line} · {why}"),
-            Ok(_) => line,
+        match self.signin_line() {
+            Some(s) => format!("{line} · {s}"),
+            None => line,
+        }
+    }
+
+    /// How the browser sign-in stands, when it's on.
+    fn signin_line(&self) -> Option<String> {
+        if !self.use_signin {
+            return None;
+        }
+        if self.browser.is_none() {
+            return Some(
+                "Couldn't tell your default browser: set OPENDJ_YTDLP_BROWSER (safari, \
+                 chrome, firefox…)"
+                    .into(),
+            );
+        }
+        self.signin.state().line(self.kind)
+    }
+
+    /// Starts looking for the browser sign-in once yt-dlp is there, and
+    /// hands what's found to downloads and lists.
+    fn sync_signin(&self) {
+        if self.use_signin && self.signin.state() == signin::State::Off {
+            if let (Some(program), Some(browser)) = (self.tool.program(), &self.browser) {
+                self.signin
+                    .start(program, browser.clone(), self.kind, self.dir.clone());
+            }
+        }
+        // Only a source using the sign-in touches it, so one switched off
+        // never clears another's.
+        if self.use_signin || self.handed.get() {
+            premium::set(self.signin.state().browser().map(str::to_string));
+            self.handed.set(self.use_signin);
         }
     }
 
@@ -110,9 +151,9 @@ impl YtDlp {
     fn browse_missing(&self) -> Option<String> {
         let name = self.kind.info().name;
         match self.kind {
-            Kind::YouTube if !matches!(self.premium, Ok(Some(_))) => Some(format!(
-                "To list your playlists, type the browser you're signed in to YouTube with \
-                 in Settings › {name}."
+            Kind::YouTube if self.signin.state().browser().is_none() => Some(format!(
+                "To list your playlists, switch on Use my browser's sign-in in Settings › \
+                 {name}."
             )),
             Kind::SoundCloud if self.profile.is_none() => Some(format!(
                 "To list your likes and sets, fill in your SoundCloud profile in Settings › \
@@ -130,8 +171,10 @@ impl YtDlp {
         }
     }
 
-    /// Gives every later yt-dlp run Deno, once it's there.
+    /// Gives every later yt-dlp run Deno, once it's there, and the browser
+    /// sign-in to downloads and lists.
     fn pass_deno(&self) {
+        self.sync_signin();
         tool::set_extra_args(self.deno.args());
     }
 
@@ -207,15 +250,6 @@ pub fn page(
             heading: String::new(),
             rows,
         }],
-    }
-}
-
-/// How the Premium sign-in stands.
-pub fn premium_line(premium: &Result<Option<String>, String>) -> String {
-    match premium {
-        Ok(Some(b)) => format!("Signed in through {b}: downloads at 256 kbps where offered"),
-        Ok(None) => "Not signed in: downloads at 128 kbps".into(),
-        Err(why) => why.clone(),
     }
 }
 
@@ -298,47 +332,36 @@ impl Plugin for YtDlp {
         let mut settings = vec![
             Setting::new("", SettingKind::Note, "", &self.line()),
             Setting::new(
-                "update",
-                SettingKind::Switch(true),
-                "Keep yt-dlp up to date",
-                "Looks for a newer yt-dlp once a day. Sites change often, and an old \
-                 yt-dlp stops finding things.",
+                "signin",
+                SettingKind::Switch(false),
+                "Use my browser's sign-in",
+                &format!(
+                    "Uses your {name} sign-in from your default browser: lists your own \
+                     {name} lists, and downloads at 256 kbps with {plan}. Your password never \
+                     reaches openDJ. Downloading signed in is against {name}'s terms."
+                ),
             ),
         ];
-        if kind.wants_deno() {
-            settings.push(Setting::new(
-                "deno",
-                SettingKind::Switch(true),
-                "Full YouTube support",
-                "Downloads Deno (about 45 MB), which yt-dlp needs to answer YouTube's player \
-                 checks. Without it, some videos fail or come only in formats openDJ can't play.",
-            ));
-        }
-        settings.push(Setting::new(
-            "premium_browser",
-            SettingKind::Text,
-            &format!("Browser signed in to {name}"),
-            &format!(
-                "Lets the add-on list your own {name} lists (Search for: Playlist), and with \
-                 {plan}, download at 256 kbps instead of 128 where {name} offers it. Type \
-                 the browser you're signed in to {name} with: safari, chrome, \
-                 firefox, brave, edge, opera or vivaldi (add :Profile 2 for another Chrome \
-                 profile). yt-dlp reads the sign-in from it for each download; your password \
-                 never reaches the add-on. Searches and previews stay signed out. On a Mac, \
-                 Safari needs Full Disk Access for openDJ, and Chrome-type browsers ask to \
-                 unlock their safe storage: choose Always Allow. Downloading signed in is \
-                 against {name}'s terms and could get the account flagged. Leave empty to \
-                 stay signed out."
-            ),
-        ));
         if kind == Kind::SoundCloud {
             settings.push(Setting::new(
                 "profile",
                 SettingKind::Text,
                 "Your SoundCloud profile",
-                "Your SoundCloud name or page, like soundcloud.com/yourname: its likes and \
-                 sets are listed with Search for: Playlist. Public likes and sets need no \
-                 sign-in.",
+                "soundcloud.com/yourname, to list your likes and sets.",
+            ));
+        }
+        settings.push(Setting::new(
+            "update",
+            SettingKind::Switch(true),
+            "Keep yt-dlp up to date",
+            "Checks daily. Sites change often, and an old yt-dlp stops working.",
+        ));
+        if kind.wants_deno() {
+            settings.push(Setting::new(
+                "deno",
+                SettingKind::Switch(true),
+                "Full YouTube support",
+                "Fetches Deno (45 MB), which yt-dlp needs for some videos.",
             ));
         }
         settings.push(Setting::new(
@@ -346,19 +369,13 @@ impl Plugin for YtDlp {
             "download_folder",
             SettingKind::Folder,
             "Download folder",
-            &format!(
-                "Tracks are saved as Artist - Title, tagged with where they came from. By \
-                 default, Downloaded/{folder} in your music folder."
-            ),
+            &format!("Default: Downloaded/{folder} in your music folder."),
         ));
         settings.push(Setting::new(
             "about",
             SettingKind::Note,
             "About these downloads",
-            &format!(
-                "Audio from {name} is lossy (128 kbps, 256 with {plan}). Use it for tracks \
-                 you can't buy, and buy a proper copy when one comes out."
-            ),
+            &format!("Lossy (128 kbps, 256 with {plan}). Buy a proper copy when you can."),
         ));
         settings
     }
@@ -368,9 +385,18 @@ impl Plugin for YtDlp {
         }
         self.update = config.is_on("update", true);
         self.use_deno = self.kind.wants_deno() && config.is_on("deno", true);
-        self.premium = premium::browser(config.get("premium_browser"));
+        // A browser typed in the field older versions had still counts.
+        let named = premium::browser(config.get("premium_browser"))
+            .ok()
+            .flatten();
+        let use_signin = config.is_on("signin", false) || named.is_some();
+        let browser = named.or_else(|| signin::default_browser().map(str::to_string));
+        if use_signin != self.use_signin || browser != self.browser || !use_signin {
+            self.signin.off();
+        }
+        self.use_signin = use_signin;
+        self.browser = browser;
         self.profile = browse::profile(config.get("profile"));
-        premium::set(self.premium.clone().unwrap_or(None));
         self.tool.ensure(&self.dir, self.update);
         self.deno.ensure(&self.dir, self.use_deno, self.update);
         self.pass_deno();
@@ -634,6 +660,7 @@ impl SearchSource for YtDlp {
     }
 
     fn status(&mut self) -> Option<StatusPage> {
+        self.pass_deno();
         let state = self.tool.state();
         let broken = match &state {
             State::Ready(r) => self.health.line(&r.version),
@@ -645,9 +672,11 @@ impl SearchSource for YtDlp {
                 .rows
                 .retain(|(label, _)| !label.starts_with("Deno"));
         }
-        page.sections[0]
-            .rows
-            .push((self.kind.plan().to_string(), premium_line(&self.premium)));
+        page.sections[0].rows.push((
+            "Sign-in".to_string(),
+            self.signin_line()
+                .unwrap_or_else(|| "Off: downloads at 128 kbps".into()),
+        ));
         Some(page)
     }
 }
@@ -692,12 +721,15 @@ mod tests {
     }
 
     #[test]
-    fn says_how_premium_stands() {
-        assert!(premium_line(&Ok(None)).contains("128 kbps"));
-        assert!(premium_line(&Ok(Some("safari".into()))).contains("safari"));
+    fn says_how_the_sign_in_stands() {
         let mut y = YtDlp::new(Kind::YouTube);
-        y.premium = premium::browser("netscape");
-        assert!(y.line().contains("isn't a browser"));
+        assert_eq!(y.signin_line(), None);
+        y.use_signin = true;
+        y.browser = None;
+        assert!(y.signin_line().unwrap().contains("default browser"));
+        y.browser = Some("safari".into());
+        y.signin.set(signin::State::SignedIn("safari".into()));
+        assert!(y.line().ends_with("Signed in to YouTube through Safari"));
     }
 
     #[test]
@@ -770,9 +802,9 @@ mod tests {
             ..Default::default()
         };
         let mut yt = YtDlp::new(Kind::YouTube);
-        assert!(yt.describe(&lists)[0].contains("type the browser"));
+        assert!(yt.describe(&lists)[0].contains("Use my browser's sign-in"));
         assert!(yt.start(&lists).is_err());
-        yt.premium = Ok(Some("safari".into()));
+        yt.signin.set(signin::State::SignedIn("safari".into()));
         assert!(yt.describe(&lists)[0].starts_with("Your Liked Music"));
         let mut sc = YtDlp::new(Kind::SoundCloud);
         assert!(sc.describe(&lists)[0].contains("SoundCloud profile"));

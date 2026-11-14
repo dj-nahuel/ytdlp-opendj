@@ -92,35 +92,42 @@ named with it. Each list opens to its tracks, and downloads whole into a
 folder named after it.
 
 - **YouTube** lists Liked Music, liked videos, Watch Later and your
-  playlists. It needs **Browser signed in to YouTube** filled in (below),
+  playlists. It needs **Use my browser's sign-in** switched on (below),
   since these lists are private.
 - **SoundCloud DL** lists the likes and sets of the profile in **Your
   SoundCloud profile** (your name, or `soundcloud.com/yourname`). Public
-  likes and sets need no sign-in; with the browser filled in, private sets
+  likes and sets need no sign-in; with the sign-in switched on, private sets
   show too.
 
-## YouTube Premium and SoundCloud Go+
+## Signing in (YouTube Premium and SoundCloud Go+)
 
-With YouTube Premium or SoundCloud Go+, those sites offer AAC audio at 256
-kbps instead of 128. To use it, type the browser you're signed in with:
-**Browser signed in to YouTube** in **Settings → YouTube**, or **Browser
-signed in to SoundCloud** in **Settings → SoundCloud DL**. Either takes `safari`, `chrome`,
-`firefox`, `brave`, `edge`, `opera` or `vivaldi`, with `:Profile 2` after it
-for another Chrome profile. yt-dlp then reads the sign-in from that browser
-(`--cookies-from-browser`) for each YouTube and SoundCloud download. The
-add-on never sees a password, and searches and previews stay signed out.
-A SoundCloud artist's own download file still comes first when they offer
-one.
+Switch on **Use my browser's sign-in** in the source's settings. The add-on
+finds your default browser and checks straight away that it's signed in to
+the site; the top of the settings and the source's panel say how it went:
 
-- On a Mac, Safari's sign-ins need Full Disk Access for openDJ (System
-  Settings → Privacy & Security → Full Disk Access). Chrome, Brave, Edge
-  and the like ask to unlock their safe storage in the Keychain: choose
-  Always Allow, or it asks on every download.
+- **Signed in to YouTube through Safari**: done. Your own lists show with
+  Search for: Playlist, and with Premium or Go+ downloads come at 256 kbps
+  instead of 128.
+- **Not signed in**: the site's sign-in page opens in your browser. Sign in
+  there; the add-on notices within a few seconds.
+- **Safari needs Full Disk Access**: the macOS page for it opens. Switch on
+  openDJ there and restart openDJ. Chrome, Brave, Edge and the like ask to
+  unlock their safe storage in the Keychain instead: choose Always Allow.
+
+Google stopped yt-dlp signing in to YouTube by itself in 2024, so the
+browser's own sign-in is the only way: yt-dlp reads its cookies
+(`--cookies-from-browser`). Your password never reaches openDJ. Only
+downloads and your lists use it; searches and previews stay signed out. To
+use a browser other than the default, start openDJ with
+`OPENDJ_YTDLP_BROWSER` set to its name (`safari`, `chrome`, `firefox`,
+`brave`, `edge`, `opera`, `vivaldi`).
+
 - The Downloads list says each download's bitrate. The sites don't always
   offer 256 kbps, even signed in; then the download comes at 128 kbps and
-  the list says so.
+  the list says so. A SoundCloud artist's own download file still comes
+  first.
 - Downloading signed in is against both sites' terms and could get the
-  account flagged. Leave the field empty to stay signed out.
+  account flagged.
 
 ## Installing it
 
