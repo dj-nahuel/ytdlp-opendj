@@ -17,8 +17,8 @@ The add-on is being built in steps:
 | Step | What | State |
 | --- | --- | --- |
 | 1 | Fetches yt-dlp for your computer, checks it, keeps it up to date | done |
-| 2 | Search YouTube and SoundCloud | next |
-| 3 | Download audio into `Downloaded/YouTube` | |
+| 2 | Search YouTube and SoundCloud | done |
+| 3 | Download audio into `Downloaded/YouTube` | next |
 | 4 | Pasted links and "Add to Downloads", hearthis.at | |
 | 5 | Hear a result before downloading | |
 | 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | |
