@@ -1,8 +1,13 @@
 # ytdlp-opendj
 
 An optional add-on for [openDJ](https://github.com/openwave-studio/opendj)
-that adds a **YouTube** source to the library rail, through
-[yt-dlp](https://github.com/yt-dlp/yt-dlp). It's meant as a last resort for
+that adds two sources to the library rail, through
+[yt-dlp](https://github.com/yt-dlp/yt-dlp): **YouTube** (with YouTube
+Music), the widest catalog of released songs, and **SoundCloud DL**
+(SoundCloud with hearthis.at), for DJ edits, bootlegs, remixes and free
+downloads. Each is its own program with its own settings, so you can order
+them or switch one off. (openDJ's own SoundCloud entry is for browsing, so
+this one has a name of its own.) It's meant as a last resort for
 tracks you can't buy: edits, bootlegs, white labels and out-of-print
 records.
 
@@ -23,11 +28,13 @@ The add-on is being built in steps:
 | 5 | Hear a result before downloading | done |
 | 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | done |
 | 7 | YouTube Premium and SoundCloud Go+ sign-in for 256 kbps audio | done |
+| 8 | YouTube and SoundCloud as separate sources | done |
+| 9 | Browse your YouTube playlists and SoundCloud likes and sets | next |
 
-Paste a YouTube, YouTube Music, SoundCloud or hearthis.at link into the
-search box to list that track, or every track of a playlist or set (up to
+Paste a YouTube or YouTube Music link into YouTube's search box, or a
+SoundCloud or hearthis.at link into SoundCloud DL's, to list that track, or every track of a playlist or set (up to
 200). A playlist openDJ sends with its songs (as from "Add to Downloads")
-has each song looked up on YouTube, three results each, released audio
+has each song looked up on that source's site, three results each, released audio
 from the artist's own channel first, so "Tick best of each" picks those.
 
 The play button on a result plays it while it streams in, from a file in
@@ -80,8 +87,9 @@ until the site works again.
 ## YouTube Premium and SoundCloud Go+
 
 With YouTube Premium or SoundCloud Go+, those sites offer AAC audio at 256
-kbps instead of 128. To use it, type the browser you're signed in to them
-with in **Settings → YouTube → Premium / Go+ browser**: `safari`, `chrome`,
+kbps instead of 128. To use it, type the browser you're signed in with:
+**YouTube Premium browser** in **Settings → YouTube**, or **SoundCloud Go+
+browser** in **Settings → SoundCloud DL**. Either takes `safari`, `chrome`,
 `firefox`, `brave`, `edge`, `opera` or `vivaldi`, with `:Profile 2` after it
 for another Chrome profile. yt-dlp then reads the sign-in from that browser
 (`--cookies-from-browser`) for each YouTube and SoundCloud download. The
@@ -109,7 +117,9 @@ cd ytdlp-opendj
 scripts/install.sh
 ```
 
-This builds `opendj-addon-ytdlp` and puts it in openDJ's add-ons folder.
+This builds `opendj-addon-ytdlp` (YouTube) and `opendj-addon-soundcloud`
+(SoundCloud DL) and puts them in openDJ's add-ons folder. Each fetches its
+own yt-dlp; only YouTube fetches Deno.
 Restart openDJ to load it. openDJ starts every program in that folder and
 talks to it over stdin and stdout, so openDJ itself is never rebuilt.
 

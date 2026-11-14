@@ -9,6 +9,10 @@ license = "GPL-3.0-or-later"
 name = "opendj-addon-ytdlp"
 path = "src/main.rs"
 
+[[bin]]
+name = "opendj-addon-soundcloud"
+path = "src/soundcloud.rs"
+
 [dependencies]
 lofty = "0.25.5"
 # The plugin traits from openDJ. Point this at the openDJ repository (or a

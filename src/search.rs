@@ -42,8 +42,6 @@ pub enum Site {
 
 impl Site {
     /// The sites a typed search goes to.
-    pub const SEARCHED: [Site; 2] = [Site::YouTube, Site::SoundCloud];
-
     pub fn name(self) -> &'static str {
         match self {
             Site::YouTube => "YouTube",
@@ -371,9 +369,9 @@ pub fn rank(mut items: Vec<Found>) -> Vec<Found> {
     items
 }
 
-/// Looks up each of `songs` ("Artist - Title") on YouTube, a few at a time,
+/// Looks up each of `songs` ("Artist - Title") on `site`, a few at a time,
 /// skipping the groups in `skip`.
-pub fn spawn_songs(program: &Path, songs: &[String], skip: &[String]) -> Shared {
+pub fn spawn_songs(program: &Path, site: Site, songs: &[String], skip: &[String]) -> Shared {
     let shared: Shared = Arc::default();
     let queue: Vec<(String, String)> = songs
         .iter()
@@ -399,7 +397,7 @@ pub fn spawn_songs(program: &Path, songs: &[String], skip: &[String]) -> Shared 
             let Some((group, song)) = queue.lock().unwrap().pop_front() else {
                 return;
             };
-            let found = look_up(&program, &song);
+            let found = look_up(&program, site, &song);
             let mut r = out.lock().unwrap();
             r.items.extend(rank(found).into_iter().map(|mut f| {
                 f.group = group.clone();
@@ -412,10 +410,10 @@ pub fn spawn_songs(program: &Path, songs: &[String], skip: &[String]) -> Shared 
     shared
 }
 
-/// One song's YouTube results.
-fn look_up(program: &Path, song: &str) -> Vec<Found> {
+/// One song's results on `site`.
+fn look_up(program: &Path, site: Site, song: &str) -> Vec<Found> {
     let mut cmd = crate::tool::command(program);
-    cmd.args(args(Site::YouTube, song, PER_SONG))
+    cmd.args(args(site, song, PER_SONG))
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     let Ok(out) = cmd.output() else {
@@ -423,7 +421,7 @@ fn look_up(program: &Path, song: &str) -> Vec<Found> {
     };
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|l| parse(Site::YouTube, l))
+        .filter_map(|l| parse(site, l))
         .collect()
 }
 
@@ -649,7 +647,7 @@ mod tests {
             "B - Missing".into(),
             "C - Three".into(),
         ];
-        let s = spawn_songs(&fake, &songs, &["3. C – Three".to_string()]);
+        let s = spawn_songs(&fake, Site::YouTube, &songs, &["3. C – Three".to_string()]);
         for _ in 0..300 {
             if s.lock().unwrap().done {
                 break;
