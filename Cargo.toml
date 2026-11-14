@@ -10,6 +10,7 @@ name = "opendj-addon-ytdlp"
 path = "src/main.rs"
 
 [dependencies]
+lofty = "0.25.5"
 # The plugin traits from openDJ. Point this at the openDJ repository (or a
 # local checkout with `path = ".../crates/plugins"`).
 opendj-plugins = { git = "https://github.com/openwave-studio/opendj" }

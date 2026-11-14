@@ -18,11 +18,17 @@ The add-on is being built in steps:
 | --- | --- | --- |
 | 1 | Fetches yt-dlp for your computer, checks it, keeps it up to date | done |
 | 2 | Search YouTube and SoundCloud | done |
-| 3 | Download audio into `Downloaded/YouTube` | next |
-| 4 | Pasted links and "Add to Downloads", hearthis.at | |
+| 3 | Download audio into `Downloaded/YouTube` | done |
+| 4 | Pasted links and "Add to Downloads", hearthis.at | next |
 | 5 | Hear a result before downloading | |
 | 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | |
 | 7 | YouTube Premium sign-in for 256 kbps audio | |
+
+Downloads are the audio as the site sends it, with no converting, so no
+ffmpeg is needed: AAC from YouTube (openDJ can't play YouTube's Opus),
+MP3 or AAC from SoundCloud, or the artist's own file when they allow
+downloads. They're saved as `Artist - Title`, three at a time, with the
+artist, title, cover and a comment saying where they came from.
 
 Audio from YouTube and SoundCloud is lossy (128 to 160 kbps without
 Premium). Buy a proper copy when one comes out.

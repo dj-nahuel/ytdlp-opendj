@@ -20,9 +20,12 @@ use opendj_plugins::source::{
 };
 use opendj_plugins::{Manifest, Plugin, PluginConfig, PluginError, Setting, SettingKind};
 
+pub mod download;
 pub mod search;
+pub mod tags;
 pub mod tool;
 
+use download::Downloads;
 use search::{Shared, Site};
 use tool::{State, Tool};
 
@@ -54,6 +57,7 @@ pub struct YtDlp {
     update: bool,
     searches: HashMap<String, Search>,
     next: u64,
+    downloads: Downloads,
 }
 
 impl Default for YtDlp {
@@ -70,6 +74,7 @@ impl YtDlp {
             update: true,
             searches: HashMap::new(),
             next: 0,
+            downloads: Downloads::default(),
         }
     }
 
@@ -190,7 +195,8 @@ impl Plugin for YtDlp {
                 "download_folder",
                 SettingKind::Folder,
                 "Download folder",
-                "By default, Downloaded/YouTube in your music folder.",
+                "Tracks are saved as Artist - Title, tagged with where they came from. By \
+                 default, Downloaded/YouTube in your music folder.",
             ),
             Setting::new(
                 "about",
@@ -265,12 +271,32 @@ impl SearchSource for YtDlp {
         }
     }
 
-    fn download(&mut self, _id: &str, _items: &[Found], _dir: &Path) -> Result<(), PluginError> {
-        Err(PluginError::NotSupported)
+    fn download(&mut self, _id: &str, items: &[Found], dir: &Path) -> Result<(), PluginError> {
+        self.downloads
+            .add(items, dir)
+            .map_err(PluginError::Network)?;
+        self.downloads.pump(self.tool.program().as_deref());
+        Ok(())
     }
 
     fn progress(&mut self) -> Vec<DownloadUpdate> {
-        Vec::new()
+        // Downloads asked for while yt-dlp was still arriving start now.
+        self.downloads.pump(self.tool.program().as_deref());
+        self.downloads.progress()
+    }
+
+    fn notes(&mut self) -> Vec<(String, String)> {
+        self.downloads.notes()
+    }
+
+    fn cancel(&mut self, key: &str) -> Result<(), PluginError> {
+        self.downloads.cancel(key).map_err(PluginError::Network)
+    }
+
+    fn retry(&mut self, key: &str) -> Result<(), PluginError> {
+        self.downloads.retry(key).map_err(PluginError::Network)?;
+        self.downloads.pump(self.tool.program().as_deref());
+        Ok(())
     }
 
     fn status(&mut self) -> Option<StatusPage> {
