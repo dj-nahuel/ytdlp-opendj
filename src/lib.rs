@@ -10,6 +10,7 @@
 //! It isn't part of openDJ: see this repository's README. What is
 //! downloaded, and whether the DJ has the right to it, is up to the DJ.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -19,8 +20,10 @@ use opendj_plugins::source::{
 };
 use opendj_plugins::{Manifest, Plugin, PluginConfig, PluginError, Setting, SettingKind};
 
+pub mod search;
 pub mod tool;
 
+use search::{Shared, Site};
 use tool::{State, Tool};
 
 const MANIFEST: Manifest = Manifest {
@@ -36,14 +39,21 @@ const INFO: SourceInfo = SourceInfo {
     hint: "Artist - Title, or a YouTube or SoundCloud link",
 };
 
-/// Said while searching isn't built yet.
-const SOON: &str = "Searching comes in the next version of the add-on.";
+/// Said for links, which a later version reads.
+const LINKS_SOON: &str = "Links come in the next version of the add-on: search by name for now.";
+
+/// One search: a yt-dlp per site.
+struct Search {
+    sites: Vec<(Site, Shared)>,
+}
 
 pub struct YtDlp {
     tool: Tool,
     /// The add-on's own folder in openDJ's config.
     dir: PathBuf,
     update: bool,
+    searches: HashMap<String, Search>,
+    next: u64,
 }
 
 impl Default for YtDlp {
@@ -58,6 +68,8 @@ impl YtDlp {
             tool: Tool::default(),
             dir: std::env::temp_dir().join("opendj-ytdlp"),
             update: true,
+            searches: HashMap::new(),
+            next: 0,
         }
     }
 
@@ -112,6 +124,36 @@ pub fn page(state: &State, now: SystemTime) -> StatusPage {
             heading: String::new(),
             rows,
         }],
+    }
+}
+
+/// What a search's sites have found so far: YouTube's first, then
+/// SoundCloud's.
+fn snapshot(sites: &[(Site, Shared)]) -> Snapshot {
+    let mut items = Vec::new();
+    let mut counts = Vec::new();
+    let mut errors = Vec::new();
+    let mut done = true;
+    for (site, shared) in sites {
+        let r = shared.lock().unwrap();
+        items.extend(r.items.iter().cloned());
+        done &= r.done;
+        if let Some(e) = &r.error {
+            errors.push(format!("{} failed: {e}", site.name()));
+        } else if r.done {
+            counts.push(format!("{} on {}", r.items.len(), site.name()));
+        }
+    }
+    let note = counts
+        .into_iter()
+        .chain(errors)
+        .collect::<Vec<_>>()
+        .join(" · ");
+    Snapshot {
+        items,
+        done,
+        note,
+        title: String::new(),
     }
 }
 
@@ -178,17 +220,49 @@ impl SearchSource for YtDlp {
         if text.is_empty() {
             return Vec::new();
         }
-        vec![format!("YouTube: {text}"), SOON.to_string()]
+        if opendj_plugins::is_web_url(text) {
+            return vec![LINKS_SOON.to_string()];
+        }
+        Site::ALL
+            .iter()
+            .map(|site| format!("{}: {text}", site.name()))
+            .collect()
     }
 
-    fn start(&mut self, _query: &SourceQuery) -> Result<String, PluginError> {
+    fn start(&mut self, query: &SourceQuery) -> Result<String, PluginError> {
         // Also a chance to pick up a day-old yt-dlp's update.
         self.tool.ensure(&self.dir, self.update);
-        Err(PluginError::Network(SOON.into()))
+        let text = query.text.trim();
+        if opendj_plugins::is_web_url(text) {
+            return Err(PluginError::Network(LINKS_SOON.into()));
+        }
+        let Some(program) = self.tool.program() else {
+            return Err(PluginError::Network(self.line()));
+        };
+        let sites = Site::ALL
+            .iter()
+            .map(|&site| (site, search::spawn(&program, site, text)))
+            .collect();
+        self.next += 1;
+        let id = self.next.to_string();
+        self.searches.insert(id.clone(), Search { sites });
+        Ok(id)
     }
 
-    fn results(&mut self, _id: &str) -> Result<Snapshot, PluginError> {
-        Err(PluginError::NotSupported)
+    fn results(&mut self, id: &str) -> Result<Snapshot, PluginError> {
+        let search = self
+            .searches
+            .get(id)
+            .ok_or_else(|| PluginError::Network("This search ended; search again.".into()))?;
+        Ok(snapshot(&search.sites))
+    }
+
+    fn stop(&mut self, id: &str) {
+        if let Some(search) = self.searches.remove(id) {
+            for (_, s) in &search.sites {
+                search::kill(s);
+            }
+        }
     }
 
     fn download(&mut self, _id: &str, _items: &[Found], _dir: &Path) -> Result<(), PluginError> {
@@ -258,7 +332,48 @@ mod tests {
             text: "Bonobo - Kerala".into(),
             ..Default::default()
         };
-        assert_eq!(y.describe(&q)[0], "YouTube: Bonobo - Kerala");
+        assert_eq!(
+            y.describe(&q),
+            vec!["YouTube: Bonobo - Kerala", "SoundCloud: Bonobo - Kerala"]
+        );
         assert!(y.describe(&SourceQuery::default()).is_empty());
+        let link = SourceQuery {
+            text: "https://www.youtube.com/watch?v=x".into(),
+            ..Default::default()
+        };
+        assert_eq!(y.describe(&link), vec![LINKS_SOON]);
+    }
+
+    #[test]
+    fn puts_both_sites_together() {
+        use opendj_plugins::source::Found;
+        let site = |items: usize, done: bool, error: Option<&str>| -> Shared {
+            let s: Shared = Default::default();
+            {
+                let mut r = s.lock().unwrap();
+                r.items = (0..items)
+                    .map(|i| Found {
+                        key: i.to_string(),
+                        ..Default::default()
+                    })
+                    .collect();
+                r.done = done;
+                r.error = error.map(str::to_string);
+            }
+            s
+        };
+        let snap = snapshot(&[
+            (Site::YouTube, site(3, true, None)),
+            (Site::SoundCloud, site(1, false, None)),
+        ]);
+        assert_eq!(snap.items.len(), 4);
+        assert!(!snap.done);
+        assert_eq!(snap.note, "3 on YouTube");
+        let snap = snapshot(&[
+            (Site::YouTube, site(0, true, Some("bot check"))),
+            (Site::SoundCloud, site(2, true, None)),
+        ]);
+        assert!(snap.done);
+        assert_eq!(snap.note, "2 on SoundCloud · YouTube failed: bot check");
     }
 }
