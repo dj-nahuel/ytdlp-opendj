@@ -26,6 +26,10 @@ const YOUTUBE_FORMATS: &str = "141/bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/14
 const SOUNDCLOUD_FORMATS: &str =
     "download/bestaudio[ext=mp3]/bestaudio[acodec=mp3]/bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]";
 
+/// hearthis.at: the artist's own file when they allow downloads (yt-dlp
+/// names those formats by their extension), else the MP3 stream.
+const HEARTHIS_FORMATS: &str = "wav/flac/aiff/aif/m4a/mp3/bestaudio[acodec=mp3]";
+
 /// What a progress line from yt-dlp starts with.
 const PROG: &str = "ODJPROG ";
 /// What the finished file's line starts with.
@@ -45,8 +49,11 @@ pub fn source(key: &str) -> Option<(Site, String)> {
                 format!("https://www.youtube.com/watch?v={rest}"),
             ))
         }
-        "sc" if rest.starts_with("https://soundcloud.com/") => {
+        "sc" if rest.starts_with(Site::SoundCloud.page_prefix()) => {
             Some((Site::SoundCloud, rest.to_string()))
+        }
+        "ht" if rest.starts_with(Site::HearThis.page_prefix()) => {
+            Some((Site::HearThis, rest.to_string()))
         }
         _ => None,
     }
@@ -125,6 +132,7 @@ pub fn args(site: Site, url: &str, dir: &Path, base: &str) -> Vec<String> {
         match site {
             Site::YouTube => YOUTUBE_FORMATS,
             Site::SoundCloud => SOUNDCLOUD_FORMATS,
+            Site::HearThis => HEARTHIS_FORMATS,
         }
         .into(),
         "--progress-template".into(),
@@ -442,6 +450,10 @@ mod tests {
         assert_eq!(
             source("sc:https://soundcloud.com/dj/edit"),
             Some((Site::SoundCloud, "https://soundcloud.com/dj/edit".into()))
+        );
+        assert_eq!(
+            source("ht:https://hearthis.at/dj/mix/"),
+            Some((Site::HearThis, "https://hearthis.at/dj/mix/".into()))
         );
         assert_eq!(source("yt:a&b"), None);
         assert_eq!(source("sc:https://evil.example/x"), None);
