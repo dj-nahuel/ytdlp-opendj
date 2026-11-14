@@ -1,0 +1,23 @@
+[package]
+name = "opendj-addon-ytdlp"
+description = "Optional openDJ add-on: find tracks on YouTube and SoundCloud and download them through yt-dlp"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "opendj-addon-ytdlp"
+path = "src/main.rs"
+
+[dependencies]
+# The plugin traits from openDJ. Point this at the openDJ repository (or a
+# local checkout with `path = ".../crates/plugins"`).
+opendj-plugins = { git = "https://github.com/openwave-studio/opendj" }
+sha2 = "0.11"
+ureq = { version = "3", features = ["json"] }
+
+# openDJ's engine (which opendj-plugins builds on) needs its own copy of
+# the key-lock time-stretcher. Cargo applies openDJ's own [patch] only when
+# building openDJ itself, so it's repeated here.
+[patch.crates-io]
+signalsmith-stretch = { git = "https://github.com/openwave-studio/opendj" }
