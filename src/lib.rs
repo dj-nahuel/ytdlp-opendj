@@ -39,15 +39,17 @@ const MANIFEST: Manifest = Manifest {
 const INFO: SourceInfo = SourceInfo {
     name: "YouTube",
     icon_svg: include_bytes!("../icon.svg"),
-    hint: "Artist - Title, or a YouTube or SoundCloud link",
+    hint: "Artist - Title, or a YouTube, SoundCloud or hearthis.at link",
 };
 
 /// Said for links, which a later version reads.
-const LINKS_SOON: &str = "Links come in the next version of the add-on: search by name for now.";
+const OTHER_LINK: &str = "Only YouTube, YouTube Music, SoundCloud and hearthis.at links are read.";
 
 /// One search: a yt-dlp per site.
 struct Search {
     sites: Vec<(Site, Shared)>,
+    /// A playlist's songs, each looked up on YouTube.
+    songs: bool,
 }
 
 pub struct YtDlp {
@@ -154,9 +156,32 @@ fn snapshot(sites: &[(Site, Shared)]) -> Snapshot {
         .chain(errors)
         .collect::<Vec<_>>()
         .join(" · ");
+    // A pasted playlist is listed by its name.
+    let title = sites
+        .first()
+        .map(|(_, s)| s.lock().unwrap().title.clone())
+        .unwrap_or_default();
     Snapshot {
         items,
         done,
+        note,
+        title,
+    }
+}
+
+/// A playlist's songs looked up so far: "18 of 22 found".
+fn songs_snapshot(shared: &Shared) -> Snapshot {
+    let r = shared.lock().unwrap();
+    let mut groups: Vec<&str> = r.items.iter().map(|f| f.group.as_str()).collect();
+    groups.dedup();
+    let note = if r.done {
+        format!("{} of {} found", groups.len(), r.songs)
+    } else {
+        format!("{} of {} looked up", r.looked_up, r.songs)
+    };
+    Snapshot {
+        items: r.items.clone(),
+        done: r.done,
         note,
         title: String::new(),
     }
@@ -221,15 +246,37 @@ impl SearchSource for YtDlp {
         INFO
     }
 
+    fn sites(&self) -> &'static [&'static str] {
+        // Links from these, anywhere in openDJ, can be sent here.
+        &[
+            "www.youtube.com",
+            "youtube.com",
+            "music.youtube.com",
+            "youtu.be",
+            "soundcloud.com",
+            "hearthis.at",
+        ]
+    }
+
     fn describe(&self, query: &SourceQuery) -> Vec<String> {
         let text = query.text.trim();
+        if !query.songs.is_empty() {
+            let n = query.songs.len().min(search::MAX_SONGS);
+            return vec![format!("Each of the {n} songs of {text}, on YouTube")];
+        }
         if text.is_empty() {
             return Vec::new();
         }
         if opendj_plugins::is_web_url(text) {
-            return vec![LINKS_SOON.to_string()];
+            return match search::link_site(text) {
+                Some(site) => vec![format!(
+                    "{} link: the track, or every track of the playlist",
+                    site.name()
+                )],
+                None => vec![OTHER_LINK.to_string()],
+            };
         }
-        Site::ALL
+        Site::SEARCHED
             .iter()
             .map(|site| format!("{}: {text}", site.name()))
             .collect()
@@ -239,19 +286,39 @@ impl SearchSource for YtDlp {
         // Also a chance to pick up a day-old yt-dlp's update.
         self.tool.ensure(&self.dir, self.update);
         let text = query.text.trim();
-        if opendj_plugins::is_web_url(text) {
-            return Err(PluginError::Network(LINKS_SOON.into()));
+        let link = opendj_plugins::is_web_url(text) && query.songs.is_empty();
+        let site = search::link_site(text);
+        if link && site.is_none() {
+            return Err(PluginError::Network(OTHER_LINK.into()));
         }
         let Some(program) = self.tool.program() else {
             return Err(PluginError::Network(self.line()));
         };
-        let sites = Site::ALL
-            .iter()
-            .map(|&site| (site, search::spawn(&program, site, text)))
-            .collect();
+        let search = if !query.songs.is_empty() {
+            Search {
+                sites: vec![(
+                    Site::YouTube,
+                    search::spawn_songs(&program, &query.songs, &query.skip),
+                )],
+                songs: true,
+            }
+        } else if let (true, Some(site)) = (link, site) {
+            Search {
+                sites: vec![(site, search::spawn_link(&program, site, text))],
+                songs: false,
+            }
+        } else {
+            Search {
+                sites: Site::SEARCHED
+                    .iter()
+                    .map(|&site| (site, search::spawn(&program, site, text)))
+                    .collect(),
+                songs: false,
+            }
+        };
         self.next += 1;
         let id = self.next.to_string();
-        self.searches.insert(id.clone(), Search { sites });
+        self.searches.insert(id.clone(), search);
         Ok(id)
     }
 
@@ -260,7 +327,11 @@ impl SearchSource for YtDlp {
             .searches
             .get(id)
             .ok_or_else(|| PluginError::Network("This search ended; search again.".into()))?;
-        Ok(snapshot(&search.sites))
+        Ok(if search.songs {
+            songs_snapshot(&search.sites[0].1)
+        } else {
+            snapshot(&search.sites)
+        })
     }
 
     fn stop(&mut self, id: &str) {
@@ -367,7 +438,24 @@ mod tests {
             text: "https://www.youtube.com/watch?v=x".into(),
             ..Default::default()
         };
-        assert_eq!(y.describe(&link), vec![LINKS_SOON]);
+        assert_eq!(
+            y.describe(&link),
+            vec!["YouTube link: the track, or every track of the playlist"]
+        );
+        let other = SourceQuery {
+            text: "https://example.com/x".into(),
+            ..Default::default()
+        };
+        assert_eq!(y.describe(&other), vec![OTHER_LINK]);
+        let songs = SourceQuery {
+            text: "Friday".into(),
+            songs: vec!["A - B".into(), "C - D".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            y.describe(&songs),
+            vec!["Each of the 2 songs of Friday, on YouTube"]
+        );
     }
 
     #[test]
@@ -401,5 +489,31 @@ mod tests {
         ]);
         assert!(snap.done);
         assert_eq!(snap.note, "2 on SoundCloud · YouTube failed: bot check");
+    }
+
+    #[test]
+    fn counts_songs_found() {
+        use opendj_plugins::source::Found;
+        let s: Shared = Default::default();
+        {
+            let mut r = s.lock().unwrap();
+            r.songs = 3;
+            r.looked_up = 2;
+            let f = |g: &str| Found {
+                group: g.into(),
+                ..Default::default()
+            };
+            r.items = vec![f("1. A – B"), f("1. A – B"), f("2. C – D")];
+        }
+        assert_eq!(songs_snapshot(&s).note, "2 of 3 looked up");
+        {
+            let mut r = s.lock().unwrap();
+            r.looked_up = 3;
+            r.done = true;
+        }
+        let snap = songs_snapshot(&s);
+        assert!(snap.done);
+        assert_eq!(snap.note, "2 of 3 found");
+        assert_eq!(snap.items.len(), 3);
     }
 }
