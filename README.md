@@ -29,7 +29,7 @@ The add-on is being built in steps:
 | 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | done |
 | 7 | YouTube Premium and SoundCloud Go+ sign-in for 256 kbps audio | done |
 | 8 | YouTube and SoundCloud as separate sources | done |
-| 9 | Browse your YouTube playlists and SoundCloud likes and sets | next |
+| 9 | Browse your YouTube playlists and SoundCloud likes and sets | done |
 
 Paste a YouTube or YouTube Music link into YouTube's search box, or a
 SoundCloud or hearthis.at link into SoundCloud DL's, to list that track, or every track of a playlist or set (up to
@@ -84,12 +84,27 @@ sees the errors that mean this (not a single missing video), its panel and
 Settings say so in one line, and it looks for a newer yt-dlp every hour
 until the site works again.
 
+## Your own lists
+
+Set **Search for** to **Playlist** in a source's search bar and search with
+the box empty to list your own lists, or type a word to list only those
+named with it. Each list opens to its tracks, and downloads whole into a
+folder named after it.
+
+- **YouTube** lists Liked Music, liked videos, Watch Later and your
+  playlists. It needs **Browser signed in to YouTube** filled in (below),
+  since these lists are private.
+- **SoundCloud DL** lists the likes and sets of the profile in **Your
+  SoundCloud profile** (your name, or `soundcloud.com/yourname`). Public
+  likes and sets need no sign-in; with the browser filled in, private sets
+  show too.
+
 ## YouTube Premium and SoundCloud Go+
 
 With YouTube Premium or SoundCloud Go+, those sites offer AAC audio at 256
 kbps instead of 128. To use it, type the browser you're signed in with:
-**YouTube Premium browser** in **Settings → YouTube**, or **SoundCloud Go+
-browser** in **Settings → SoundCloud DL**. Either takes `safari`, `chrome`,
+**Browser signed in to YouTube** in **Settings → YouTube**, or **Browser
+signed in to SoundCloud** in **Settings → SoundCloud DL**. Either takes `safari`, `chrome`,
 `firefox`, `brave`, `edge`, `opera` or `vivaldi`, with `:Profile 2` after it
 for another Chrome profile. yt-dlp then reads the sign-in from that browser
 (`--cookies-from-browser`) for each YouTube and SoundCloud download. The

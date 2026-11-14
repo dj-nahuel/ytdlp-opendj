@@ -15,11 +15,12 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use opendj_plugins::source::{
-    DownloadUpdate, Found, Progress, SearchSource, Snapshot, SourceInfo, SourceQuery, StatusPage,
-    StatusSection,
+    DownloadUpdate, Found, Progress, QueryKind, SearchSource, Snapshot, SourceInfo, SourceQuery,
+    StatusPage, StatusSection,
 };
 use opendj_plugins::{Manifest, Plugin, PluginConfig, PluginError, Setting, SettingKind};
 
+pub mod browse;
 pub mod deno;
 pub mod download;
 pub mod health;
@@ -66,6 +67,8 @@ pub struct YtDlp {
     /// The browser YouTube downloads read a Premium sign-in from, or why
     /// the name typed in Settings isn't one.
     premium: Result<Option<String>, String>,
+    /// SoundCloud: the DJ's profile page, whose likes and sets are listed.
+    profile: Option<String>,
 }
 
 impl YtDlp {
@@ -84,6 +87,7 @@ impl YtDlp {
             use_deno: true,
             health: Health::default(),
             premium: Ok(None),
+            profile: None,
         }
     }
 
@@ -99,6 +103,30 @@ impl YtDlp {
         match &self.premium {
             Err(why) => format!("{line} · {why}"),
             Ok(_) => line,
+        }
+    }
+
+    /// Why the DJ's lists can't be listed yet, if they can't.
+    fn browse_missing(&self) -> Option<String> {
+        let name = self.kind.info().name;
+        match self.kind {
+            Kind::YouTube if !matches!(self.premium, Ok(Some(_))) => Some(format!(
+                "To list your playlists, type the browser you're signed in to YouTube with \
+                 in Settings › {name}."
+            )),
+            Kind::SoundCloud if self.profile.is_none() => Some(format!(
+                "To list your likes and sets, fill in your SoundCloud profile in Settings › \
+                 {name}."
+            )),
+            _ => None,
+        }
+    }
+
+    /// What listing the DJ's lists brings.
+    fn lists_line(&self) -> String {
+        match self.kind {
+            Kind::YouTube => "Your Liked Music, liked videos, Watch Later and playlists".into(),
+            Kind::SoundCloud => "Your likes and sets".into(),
         }
     }
 
@@ -289,10 +317,11 @@ impl Plugin for YtDlp {
         settings.push(Setting::new(
             "premium_browser",
             SettingKind::Text,
-            &format!("{plan} browser"),
+            &format!("Browser signed in to {name}"),
             &format!(
-                "With {plan}, downloads come at 256 kbps instead of 128 where {name} offers \
-                 it. Type the browser you're signed in to {name} with: safari, chrome, \
+                "Lets the add-on list your own {name} lists (Search for: Playlist), and with \
+                 {plan}, download at 256 kbps instead of 128 where {name} offers it. Type \
+                 the browser you're signed in to {name} with: safari, chrome, \
                  firefox, brave, edge, opera or vivaldi (add :Profile 2 for another Chrome \
                  profile). yt-dlp reads the sign-in from it for each download; your password \
                  never reaches the add-on. Searches and previews stay signed out. On a Mac, \
@@ -302,6 +331,16 @@ impl Plugin for YtDlp {
                  stay signed out."
             ),
         ));
+        if kind == Kind::SoundCloud {
+            settings.push(Setting::new(
+                "profile",
+                SettingKind::Text,
+                "Your SoundCloud profile",
+                "Your SoundCloud name or page, like soundcloud.com/yourname: its likes and \
+                 sets are listed with Search for: Playlist. Public likes and sets need no \
+                 sign-in.",
+            ));
+        }
         settings.push(Setting::new(
             // openDJ's `source::DOWNLOAD_FOLDER`.
             "download_folder",
@@ -330,6 +369,7 @@ impl Plugin for YtDlp {
         self.update = config.is_on("update", true);
         self.use_deno = self.kind.wants_deno() && config.is_on("deno", true);
         self.premium = premium::browser(config.get("premium_browser"));
+        self.profile = browse::profile(config.get("profile"));
         premium::set(self.premium.clone().unwrap_or(None));
         self.tool.ensure(&self.dir, self.update);
         self.deno.ensure(&self.dir, self.use_deno, self.update);
@@ -353,6 +393,13 @@ impl SearchSource for YtDlp {
             let n = query.songs.len().min(search::MAX_SONGS);
             let site = self.kind.searched()[0].name();
             return vec![format!("Each of the {n} songs of {text}, on {site}")];
+        }
+        if query.kind == QueryKind::Playlist && !opendj_plugins::is_web_url(text) {
+            return vec![match self.browse_missing() {
+                Some(why) => why,
+                None if text.is_empty() => self.lists_line(),
+                None => format!("Your lists called {text}"),
+            }];
         }
         if text.is_empty() {
             return Vec::new();
@@ -378,6 +425,29 @@ impl SearchSource for YtDlp {
         self.tool.ensure(&self.dir, self.update);
         self.pass_deno();
         let text = query.text.trim();
+        if query.kind == QueryKind::Playlist
+            && query.songs.is_empty()
+            && !opendj_plugins::is_web_url(text)
+        {
+            if let Some(why) = self.browse_missing() {
+                return Err(PluginError::Network(why));
+            }
+            let program = self
+                .tool
+                .program()
+                .ok_or_else(|| PluginError::Network(self.line()))?;
+            let lists = browse::spawn(&program, self.kind, self.profile.as_deref(), text);
+            self.next += 1;
+            let id = self.next.to_string();
+            self.searches.insert(
+                id.clone(),
+                Search {
+                    sites: vec![(self.kind.searched()[0], lists)],
+                    songs: false,
+                },
+            );
+            return Ok(id);
+        }
         let link = opendj_plugins::is_web_url(text) && query.songs.is_empty();
         let site = search::link_site(text).filter(|&s| self.kind.owns(s));
         if link && site.is_none() {
@@ -458,10 +528,35 @@ impl SearchSource for YtDlp {
         }
     }
 
-    fn download(&mut self, _id: &str, items: &[Found], dir: &Path) -> Result<(), PluginError> {
+    fn open_folder(&mut self, _id: &str, folder: &Found) -> Result<Vec<Found>, PluginError> {
+        let Some(url) = browse::url(&folder.key) else {
+            return Ok(folder.tracks.clone());
+        };
+        let program = self
+            .tool
+            .program()
+            .ok_or_else(|| PluginError::Network(self.line()))?;
+        self.pass_deno();
+        browse::open(&program, self.kind.searched()[0], url).map_err(PluginError::Network)
+    }
+
+    fn download(&mut self, id: &str, items: &[Found], dir: &Path) -> Result<(), PluginError> {
+        let (lists, tracks): (Vec<&Found>, Vec<&Found>) =
+            items.iter().partition(|f| browse::url(&f.key).is_some());
+        let tracks: Vec<Found> = tracks.into_iter().cloned().collect();
         self.downloads
-            .add(items, dir)
+            .add(&tracks, dir)
             .map_err(PluginError::Network)?;
+        for list in lists {
+            let inside = if list.tracks.is_empty() {
+                self.open_folder(id, list)?
+            } else {
+                list.tracks.clone()
+            };
+            self.downloads
+                .add_folder(&list.key, &list.title, &inside, dir)
+                .map_err(PluginError::Network)?;
+        }
         self.pass_deno();
         self.downloads.pump(self.tool.program().as_deref());
         Ok(())
@@ -666,6 +761,29 @@ mod tests {
             sc.describe(&songs),
             vec!["Each of the 2 songs of Friday, on SoundCloud"]
         );
+    }
+
+    #[test]
+    fn describes_browsing() {
+        let lists = SourceQuery {
+            kind: QueryKind::Playlist,
+            ..Default::default()
+        };
+        let mut yt = YtDlp::new(Kind::YouTube);
+        assert!(yt.describe(&lists)[0].contains("type the browser"));
+        assert!(yt.start(&lists).is_err());
+        yt.premium = Ok(Some("safari".into()));
+        assert!(yt.describe(&lists)[0].starts_with("Your Liked Music"));
+        let mut sc = YtDlp::new(Kind::SoundCloud);
+        assert!(sc.describe(&lists)[0].contains("SoundCloud profile"));
+        sc.profile = browse::profile("dj-x");
+        assert_eq!(sc.describe(&lists), vec!["Your likes and sets"]);
+        let named = SourceQuery {
+            text: "edits".into(),
+            kind: QueryKind::Playlist,
+            ..Default::default()
+        };
+        assert_eq!(sc.describe(&named), vec!["Your lists called edits"]);
     }
 
     #[test]
