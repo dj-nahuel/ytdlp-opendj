@@ -6,13 +6,11 @@
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 
 use opendj_plugins::source::Found;
 use serde_json::Value;
-
-use crate::tool::hide_window;
 
 /// Results asked for from each site.
 pub const PER_SITE: usize = 15;
@@ -288,12 +286,11 @@ pub fn spawn_link(program: &Path, site: Site, url: &str) -> Shared {
 
 fn run(program: &Path, args: Vec<String>, site: Site, link: bool) -> Shared {
     let shared: Shared = Arc::default();
-    let mut cmd = Command::new(program);
+    let mut cmd = crate::tool::command(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    hide_window(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -417,11 +414,10 @@ pub fn spawn_songs(program: &Path, songs: &[String], skip: &[String]) -> Shared 
 
 /// One song's YouTube results.
 fn look_up(program: &Path, song: &str) -> Vec<Found> {
-    let mut cmd = Command::new(program);
+    let mut cmd = crate::tool::command(program);
     cmd.args(args(Site::YouTube, song, PER_SONG))
         .stdin(Stdio::null())
         .stderr(Stdio::null());
-    hide_window(&mut cmd);
     let Ok(out) = cmd.output() else {
         return Vec::new();
     };

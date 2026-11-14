@@ -4,11 +4,10 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 
 use crate::download::source;
 use crate::search::Site;
-use crate::tool::hide_window;
 
 /// The preview file's name, before yt-dlp adds the extension.
 const NAME: &str = "preview";
@@ -82,12 +81,11 @@ impl Preview {
         let (site, url) = source(key).ok_or_else(|| format!("can't play {key}"))?;
         clear(dir);
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let mut cmd = Command::new(program);
+        let mut cmd = crate::tool::command(program);
         cmd.args(args(site, &url, dir))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        hide_window(&mut cmd);
         let child = cmd
             .spawn()
             .map_err(|e| format!("couldn't start yt-dlp: {e}"))?;
