@@ -27,6 +27,12 @@ const SOUNDCLOUD_FORMATS: &str =
 
 /// hearthis.at: the artist's own file when they allow downloads (yt-dlp
 /// names those formats by their extension), else the MP3 stream.
+/// SoundCloud signed in with Go+: its 256 kbps AAC before the 128 kbps
+/// streams, after the artist's own file.
+const SOUNDCLOUD_GO_FORMATS: &str =
+    "download/bestaudio[acodec^=mp4a][abr>=200]/bestaudio[ext=m4a][abr>=200]/\
+     bestaudio[ext=mp3]/bestaudio[acodec=mp3]/bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]";
+
 const HEARTHIS_FORMATS: &str = "wav/flac/aiff/aif/m4a/mp3/bestaudio[acodec=mp3]";
 
 /// What a progress line from yt-dlp starts with.
@@ -118,8 +124,9 @@ pub fn free_base(dir: &Path, base: &str) -> String {
         .unwrap()
 }
 
-/// yt-dlp's arguments for downloading `url` from `site` to `dir/base.ext`.
-pub fn args(site: Site, url: &str, dir: &Path, base: &str) -> Vec<String> {
+/// yt-dlp's arguments for downloading `url` from `site` to `dir/base.ext`,
+/// `signed_in` when a Premium or Go+ sign-in goes with it.
+pub fn args(site: Site, url: &str, dir: &Path, base: &str, signed_in: bool) -> Vec<String> {
     let template = dir.join(format!("{}.%(ext)s", base.replace('%', "%%")));
     vec![
         "--ignore-config".into(),
@@ -130,6 +137,7 @@ pub fn args(site: Site, url: &str, dir: &Path, base: &str) -> Vec<String> {
         "-f".into(),
         match site {
             Site::YouTube => YOUTUBE_FORMATS,
+            Site::SoundCloud if signed_in => SOUNDCLOUD_GO_FORMATS,
             Site::SoundCloud => SOUNDCLOUD_FORMATS,
             Site::HearThis => HEARTHIS_FORMATS,
         }
@@ -140,13 +148,32 @@ pub fn args(site: Site, url: &str, dir: &Path, base: &str) -> Vec<String> {
              %(progress.total_bytes_estimate)s %(progress.speed)s"
         ),
         "--print".into(),
-        format!("after_move:{FILE}%(filepath)s"),
+        format!("after_move:{FILE}%(format_id)s %(abr)s %(filepath)s"),
         // --print alone would skip the download.
         "--no-simulate".into(),
         "-o".into(),
         template.to_string_lossy().into_owned(),
         url.to_string(),
     ]
+}
+
+/// What yt-dlp picked: its format id and bitrate, when known.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picked {
+    pub format: String,
+    pub abr: Option<f64>,
+}
+
+/// The finished file's line: the format yt-dlp picked, and the file.
+pub fn parse_file(line: &str) -> Option<(Picked, PathBuf)> {
+    let rest = line.strip_prefix(FILE)?.trim();
+    let (format, rest) = rest.split_once(' ')?;
+    let (abr, path) = rest.split_once(' ')?;
+    let picked = Picked {
+        format: format.to_string(),
+        abr: abr.parse().ok().filter(|a: &f64| *a > 0.0),
+    };
+    Some((picked, PathBuf::from(path)))
 }
 
 /// A progress line: how far (0..1) and how fast (bytes a second).
@@ -174,7 +201,9 @@ pub fn speed(bytes_per_sec: f64) -> String {
 /// Why a download failed, in words for the Downloads list.
 pub fn explain(stderr: &str) -> String {
     let last = crate::search::last_error(stderr);
-    if last.contains("Requested format is not available") {
+    if let Some(why) = crate::premium::explain(&last) {
+        why
+    } else if last.contains("Requested format is not available") {
         "No audio openDJ can play without converting (only Opus): not downloaded".into()
     } else {
         last
@@ -204,6 +233,8 @@ impl Step {
 struct Live {
     step: Option<Step>,
     speed: Option<f64>,
+    /// The format yt-dlp picked, once done.
+    picked: Option<Picked>,
     child: Option<Child>,
     cancelled: bool,
 }
@@ -294,7 +325,8 @@ impl Downloads {
         out
     }
 
-    /// Speed of each download running.
+    /// Speed of each download running, and the bitrate of each YouTube or
+    /// SoundCloud download done.
     pub fn notes(&self) -> Vec<(String, String)> {
         self.jobs
             .iter()
@@ -302,6 +334,11 @@ impl Downloads {
                 let live = j.live.lock().unwrap();
                 match (&live.step, live.speed) {
                     (Some(Step::Running(_)), Some(s)) if s > 0.0 => Some((j.key.clone(), speed(s))),
+                    (Some(Step::Done(_)), _) => live
+                        .picked
+                        .as_ref()
+                        .and_then(|p| crate::premium::note(j.site, p))
+                        .map(|n| (j.key.clone(), n)),
                     _ => None,
                 }
             })
@@ -345,7 +382,10 @@ fn start(job: &mut Job, program: &Path) {
     }
     let base = free_base(&job.dir, &base_name(&job.item));
     let mut cmd = crate::tool::command(program);
-    cmd.args(args(job.site, &job.url, &job.dir, &base))
+    let sign_in = crate::premium::args(job.site);
+    let signed_in = !sign_in.is_empty();
+    cmd.args(sign_in);
+    cmd.args(args(job.site, &job.url, &job.dir, &base, signed_in))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -375,8 +415,9 @@ fn start(job: &mut Job, program: &Path) {
         let mut file: Option<PathBuf> = None;
         if let Some(out) = stdout {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if let Some(path) = line.strip_prefix(FILE) {
-                    file = Some(PathBuf::from(path.trim()));
+                if let Some((picked, path)) = parse_file(&line) {
+                    live.lock().unwrap().picked = Some(picked);
+                    file = Some(path);
                 } else if let Some((f, s)) = parse_progress(&line) {
                     let mut l = live.lock().unwrap();
                     l.step = Some(Step::Running(f));
@@ -488,6 +529,7 @@ mod tests {
             "https://www.youtube.com/watch?v=x",
             Path::new("/m"),
             "100% - Hit",
+            false,
         );
         let i = a.iter().position(|s| s == "-f").unwrap();
         assert!(a[i + 1].starts_with("141/bestaudio[ext=m4a]"));
@@ -500,8 +542,14 @@ mod tests {
                 .to_string_lossy()
         );
         assert_eq!(a.last().unwrap(), "https://www.youtube.com/watch?v=x");
-        let sc = args(Site::SoundCloud, "u", Path::new("/m"), "b");
-        assert!(sc.iter().any(|s| s.starts_with("download/")));
+        let sc = args(Site::SoundCloud, "u", Path::new("/m"), "b", false);
+        assert!(sc
+            .iter()
+            .any(|s| s.starts_with("download/bestaudio[ext=mp3]")));
+        let go = args(Site::SoundCloud, "u", Path::new("/m"), "b", true);
+        assert!(go
+            .iter()
+            .any(|s| s.starts_with("download/bestaudio[acodec^=mp4a][abr>=200]/")));
     }
 
     #[test]
@@ -515,6 +563,25 @@ mod tests {
         assert_eq!(parse_progress("[download] 50%"), None);
         assert_eq!(speed(1_250_000.0), "1.2 MB/s");
         assert_eq!(speed(340_000.0), "340 KB/s");
+    }
+
+    #[test]
+    fn reads_the_finished_file() {
+        assert_eq!(
+            parse_file("ODJFILE 141 255.9 /m/A - B (2).m4a"),
+            Some((
+                Picked {
+                    format: "141".into(),
+                    abr: Some(255.9)
+                },
+                PathBuf::from("/m/A - B (2).m4a")
+            ))
+        );
+        assert_eq!(
+            parse_file("ODJFILE download NA /m/x.wav").unwrap().0.abr,
+            None
+        );
+        assert_eq!(parse_file("ODJPROG 1 2"), None);
     }
 
     #[test]
@@ -541,7 +608,7 @@ mod tests {
             &dir,
             r#"while [ "$1" != "-o" ]; do shift; done; t="$2"; f="${t%.%(ext)s}.mp3"
 echo "ODJPROG 10 100 NA 2000000"; echo "ODJPROG 100 100 NA NA"
-printf 'not really mp3' > "$f"; echo "ODJFILE $f""#,
+printf 'not really mp3' > "$f"; echo "ODJFILE 18 NA $f""#,
         );
         let mut d = Downloads::default();
         d.add(

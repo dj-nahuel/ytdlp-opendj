@@ -22,7 +22,7 @@ The add-on is being built in steps:
 | 4 | Pasted links and "Add to Downloads", hearthis.at | done |
 | 5 | Hear a result before downloading | done |
 | 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | done |
-| 7 | YouTube Premium sign-in for 256 kbps audio | next |
+| 7 | YouTube Premium and SoundCloud Go+ sign-in for 256 kbps audio | done |
 
 Paste a YouTube, YouTube Music, SoundCloud or hearthis.at link into the
 search box to list that track, or every track of a playlist or set (up to
@@ -40,8 +40,8 @@ MP3 or AAC from SoundCloud, or the artist's own file when they allow
 downloads. They're saved as `Artist - Title`, three at a time, with the
 artist, title, cover and a comment saying where they came from.
 
-Audio from YouTube and SoundCloud is lossy (128 to 160 kbps without
-Premium). Buy a proper copy when one comes out.
+Audio from YouTube and SoundCloud is lossy (128 kbps, or 256 kbps with
+YouTube Premium or SoundCloud Go+). Buy a proper copy when one comes out.
 
 ## yt-dlp
 
@@ -76,6 +76,28 @@ then fail until yt-dlp catches up, usually within days. When the add-on
 sees the errors that mean this (not a single missing video), its panel and
 Settings say so in one line, and it looks for a newer yt-dlp every hour
 until the site works again.
+
+## YouTube Premium and SoundCloud Go+
+
+With YouTube Premium or SoundCloud Go+, those sites offer AAC audio at 256
+kbps instead of 128. To use it, type the browser you're signed in to them
+with in **Settings → YouTube → Premium / Go+ browser**: `safari`, `chrome`,
+`firefox`, `brave`, `edge`, `opera` or `vivaldi`, with `:Profile 2` after it
+for another Chrome profile. yt-dlp then reads the sign-in from that browser
+(`--cookies-from-browser`) for each YouTube and SoundCloud download. The
+add-on never sees a password, and searches and previews stay signed out.
+A SoundCloud artist's own download file still comes first when they offer
+one.
+
+- On a Mac, Safari's sign-ins need Full Disk Access for openDJ (System
+  Settings → Privacy & Security → Full Disk Access). Chrome, Brave, Edge
+  and the like ask to unlock their safe storage in the Keychain: choose
+  Always Allow, or it asks on every download.
+- The Downloads list says each download's bitrate. The sites don't always
+  offer 256 kbps, even signed in; then the download comes at 128 kbps and
+  the list says so.
+- Downloading signed in is against both sites' terms and could get the
+  account flagged. Leave the field empty to stay signed out.
 
 ## Installing it
 

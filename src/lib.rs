@@ -23,6 +23,7 @@ use opendj_plugins::{Manifest, Plugin, PluginConfig, PluginError, Setting, Setti
 pub mod deno;
 pub mod download;
 pub mod health;
+pub mod premium;
 pub mod preview;
 pub mod search;
 pub mod tags;
@@ -75,6 +76,9 @@ pub struct YtDlp {
     /// Whether to fetch Deno for full YouTube support.
     use_deno: bool,
     health: Health,
+    /// The browser YouTube downloads read a Premium sign-in from, or why
+    /// the name typed in Settings isn't one.
+    premium: Result<Option<String>, String>,
 }
 
 impl Default for YtDlp {
@@ -97,6 +101,7 @@ impl YtDlp {
             deno: Deno::default(),
             use_deno: true,
             health: Health::default(),
+            premium: Ok(None),
         }
     }
 
@@ -108,7 +113,11 @@ impl YtDlp {
             State::Ready(r) => r.version.as_str(),
             _ => "",
         };
-        self.health.line(version).unwrap_or_else(|| line(&state))
+        let line = self.health.line(version).unwrap_or_else(|| line(&state));
+        match &self.premium {
+            Err(why) => format!("{line} · {why}"),
+            Ok(_) => line,
+        }
     }
 
     /// Gives every later yt-dlp run Deno, once it's there.
@@ -188,6 +197,15 @@ pub fn page(
             heading: String::new(),
             rows,
         }],
+    }
+}
+
+/// How the Premium sign-in stands.
+pub fn premium_line(premium: &Result<Option<String>, String>) -> String {
+    match premium {
+        Ok(Some(b)) => format!("Signed in through {b}: downloads at 256 kbps where offered"),
+        Ok(None) => "Not signed in: downloads at 128 kbps".into(),
+        Err(why) => why.clone(),
     }
 }
 
@@ -280,6 +298,20 @@ impl Plugin for YtDlp {
                  checks. Without it, some videos fail or come only in formats openDJ can't play.",
             ),
             Setting::new(
+                "premium_browser",
+                SettingKind::Text,
+                "Premium / Go+ browser",
+                "With YouTube Premium or SoundCloud Go+, downloads come at 256 kbps instead \
+                 of 128. Type the browser you're signed in to them with: safari, chrome, \
+                 firefox, brave, edge, opera or vivaldi (add :Profile 2 for another Chrome \
+                 profile). yt-dlp reads the sign-in from it for each YouTube and SoundCloud \
+                 download; your password never reaches the add-on. Searches and previews \
+                 stay signed out. On a Mac, Safari needs Full Disk Access for openDJ, and \
+                 Chrome-type browsers ask to unlock their safe storage: choose Always Allow. \
+                 Downloading signed in is against both sites' terms and could get the account \
+                 flagged. Leave empty to stay signed out.",
+            ),
+            Setting::new(
                 // openDJ's `source::DOWNLOAD_FOLDER`.
                 "download_folder",
                 SettingKind::Folder,
@@ -291,7 +323,7 @@ impl Plugin for YtDlp {
                 "about",
                 SettingKind::Note,
                 "About these downloads",
-                "Audio from YouTube and SoundCloud is lossy (128 to 160 kbps). Use it for \
+                "Audio from YouTube and SoundCloud is lossy (128 kbps, 256 with Premium or Go+). Use it for \
                  tracks you can't buy, and buy a proper copy when one comes out.",
             ),
         ]
@@ -302,6 +334,8 @@ impl Plugin for YtDlp {
         }
         self.update = config.is_on("update", true);
         self.use_deno = config.is_on("deno", true);
+        self.premium = premium::browser(config.get("premium_browser"));
+        premium::set(self.premium.clone().unwrap_or(None));
         self.tool.ensure(&self.dir, self.update);
         self.deno.ensure(&self.dir, self.use_deno, self.update);
         self.pass_deno();
@@ -513,7 +547,11 @@ impl SearchSource for YtDlp {
             State::Ready(r) => self.health.line(&r.version),
             _ => None,
         };
-        Some(page(&state, &self.deno.state(), broken, SystemTime::now()))
+        let mut page = page(&state, &self.deno.state(), broken, SystemTime::now());
+        page.sections[0]
+            .rows
+            .push(("Premium / Go+".to_string(), premium_line(&self.premium)));
+        Some(page)
     }
 }
 
@@ -554,6 +592,15 @@ mod tests {
         assert_eq!(rows[1].1, "Daily · last checked 2 h ago");
         let own = page(&ready(true, None), &deno::State::Off, None, now);
         assert!(own.sections[0].rows[1].1.contains("not updated"));
+    }
+
+    #[test]
+    fn says_how_premium_stands() {
+        assert!(premium_line(&Ok(None)).contains("128 kbps"));
+        assert!(premium_line(&Ok(Some("safari".into()))).contains("safari"));
+        let mut y = YtDlp::new();
+        y.premium = premium::browser("netscape");
+        assert!(y.line().contains("isn't a browser"));
     }
 
     #[test]
