@@ -1,5 +1,5 @@
-//! An optional add-on that gives openDJ a YouTube and SoundCloud source in
-//! its rail, through yt-dlp (<https://github.com/yt-dlp/yt-dlp>): a last
+//! An optional add-on that gives openDJ a YouTube and a SoundCloud source
+//! in its rail (see [`kind`]), through yt-dlp (<https://github.com/yt-dlp/yt-dlp>): a last
 //! resort for tracks that can't be bought, such as edits, bootlegs and
 //! out-of-print records.
 //!
@@ -23,6 +23,7 @@ use opendj_plugins::{Manifest, Plugin, PluginConfig, PluginError, Setting, Setti
 pub mod deno;
 pub mod download;
 pub mod health;
+pub mod kind;
 pub mod premium;
 pub mod preview;
 pub mod search;
@@ -35,24 +36,9 @@ mod testutil;
 use deno::Deno;
 use download::Downloads;
 use health::Health;
+pub use kind::Kind;
 use search::{Shared, Site};
 use tool::{State, Tool};
-
-const MANIFEST: Manifest = Manifest {
-    id: "ytdlp",
-    name: "YouTube",
-    hosts: &[],
-    downloads: true,
-};
-
-const INFO: SourceInfo = SourceInfo {
-    name: "YouTube",
-    icon_svg: include_bytes!("../icon.svg"),
-    hint: "Artist - Title, or a YouTube, SoundCloud or hearthis.at link",
-};
-
-/// Said for links, which a later version reads.
-const OTHER_LINK: &str = "Only YouTube, YouTube Music, SoundCloud and hearthis.at links are read.";
 
 /// One search: a yt-dlp per site.
 struct Search {
@@ -62,6 +48,7 @@ struct Search {
 }
 
 pub struct YtDlp {
+    kind: Kind,
     tool: Tool,
     /// The add-on's own folder in openDJ's config.
     dir: PathBuf,
@@ -81,15 +68,10 @@ pub struct YtDlp {
     premium: Result<Option<String>, String>,
 }
 
-impl Default for YtDlp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl YtDlp {
-    pub fn new() -> Self {
+    pub fn new(kind: Kind) -> Self {
         Self {
+            kind,
             tool: Tool::default(),
             dir: std::env::temp_dir().join("opendj-ytdlp"),
             update: true,
@@ -275,13 +257,17 @@ pub fn ago(then: SystemTime, now: SystemTime) -> String {
 
 impl Plugin for YtDlp {
     fn manifest(&self) -> &Manifest {
-        &MANIFEST
+        self.kind.manifest()
     }
     fn source(&mut self) -> Option<&mut dyn SearchSource> {
         Some(self)
     }
     fn settings(&self) -> Vec<Setting> {
-        vec![
+        let kind = self.kind;
+        let name = kind.site_name();
+        let folder = kind.info().name;
+        let plan = kind.plan();
+        let mut settings = vec![
             Setting::new("", SettingKind::Note, "", &self.line()),
             Setting::new(
                 "update",
@@ -290,50 +276,59 @@ impl Plugin for YtDlp {
                 "Looks for a newer yt-dlp once a day. Sites change often, and an old \
                  yt-dlp stops finding things.",
             ),
-            Setting::new(
+        ];
+        if kind.wants_deno() {
+            settings.push(Setting::new(
                 "deno",
                 SettingKind::Switch(true),
                 "Full YouTube support",
                 "Downloads Deno (about 45 MB), which yt-dlp needs to answer YouTube's player \
                  checks. Without it, some videos fail or come only in formats openDJ can't play.",
-            ),
-            Setting::new(
-                "premium_browser",
-                SettingKind::Text,
-                "Premium / Go+ browser",
-                "With YouTube Premium or SoundCloud Go+, downloads come at 256 kbps instead \
-                 of 128. Type the browser you're signed in to them with: safari, chrome, \
+            ));
+        }
+        settings.push(Setting::new(
+            "premium_browser",
+            SettingKind::Text,
+            &format!("{plan} browser"),
+            &format!(
+                "With {plan}, downloads come at 256 kbps instead of 128 where {name} offers \
+                 it. Type the browser you're signed in to {name} with: safari, chrome, \
                  firefox, brave, edge, opera or vivaldi (add :Profile 2 for another Chrome \
-                 profile). yt-dlp reads the sign-in from it for each YouTube and SoundCloud \
-                 download; your password never reaches the add-on. Searches and previews \
-                 stay signed out. On a Mac, Safari needs Full Disk Access for openDJ, and \
-                 Chrome-type browsers ask to unlock their safe storage: choose Always Allow. \
-                 Downloading signed in is against both sites' terms and could get the account \
-                 flagged. Leave empty to stay signed out.",
+                 profile). yt-dlp reads the sign-in from it for each download; your password \
+                 never reaches the add-on. Searches and previews stay signed out. On a Mac, \
+                 Safari needs Full Disk Access for openDJ, and Chrome-type browsers ask to \
+                 unlock their safe storage: choose Always Allow. Downloading signed in is \
+                 against {name}'s terms and could get the account flagged. Leave empty to \
+                 stay signed out."
             ),
-            Setting::new(
-                // openDJ's `source::DOWNLOAD_FOLDER`.
-                "download_folder",
-                SettingKind::Folder,
-                "Download folder",
+        ));
+        settings.push(Setting::new(
+            // openDJ's `source::DOWNLOAD_FOLDER`.
+            "download_folder",
+            SettingKind::Folder,
+            "Download folder",
+            &format!(
                 "Tracks are saved as Artist - Title, tagged with where they came from. By \
-                 default, Downloaded/YouTube in your music folder.",
+                 default, Downloaded/{folder} in your music folder."
             ),
-            Setting::new(
-                "about",
-                SettingKind::Note,
-                "About these downloads",
-                "Audio from YouTube and SoundCloud is lossy (128 kbps, 256 with Premium or Go+). Use it for \
-                 tracks you can't buy, and buy a proper copy when one comes out.",
+        ));
+        settings.push(Setting::new(
+            "about",
+            SettingKind::Note,
+            "About these downloads",
+            &format!(
+                "Audio from {name} is lossy (128 kbps, 256 with {plan}). Use it for tracks \
+                 you can't buy, and buy a proper copy when one comes out."
             ),
-        ]
+        ));
+        settings
     }
     fn configure(&mut self, config: &PluginConfig) {
         if let Some(dir) = &config.dir {
             self.dir = dir.clone();
         }
         self.update = config.is_on("update", true);
-        self.use_deno = config.is_on("deno", true);
+        self.use_deno = self.kind.wants_deno() && config.is_on("deno", true);
         self.premium = premium::browser(config.get("premium_browser"));
         premium::set(self.premium.clone().unwrap_or(None));
         self.tool.ensure(&self.dir, self.update);
@@ -344,40 +339,35 @@ impl Plugin for YtDlp {
 
 impl SearchSource for YtDlp {
     fn info(&self) -> SourceInfo {
-        INFO
+        self.kind.info()
     }
 
     fn sites(&self) -> &'static [&'static str] {
         // Links from these, anywhere in openDJ, can be sent here.
-        &[
-            "www.youtube.com",
-            "youtube.com",
-            "music.youtube.com",
-            "youtu.be",
-            "soundcloud.com",
-            "hearthis.at",
-        ]
+        self.kind.hosts()
     }
 
     fn describe(&self, query: &SourceQuery) -> Vec<String> {
         let text = query.text.trim();
         if !query.songs.is_empty() {
             let n = query.songs.len().min(search::MAX_SONGS);
-            return vec![format!("Each of the {n} songs of {text}, on YouTube")];
+            let site = self.kind.searched()[0].name();
+            return vec![format!("Each of the {n} songs of {text}, on {site}")];
         }
         if text.is_empty() {
             return Vec::new();
         }
         if opendj_plugins::is_web_url(text) {
-            return match search::link_site(text) {
+            return match search::link_site(text).filter(|&s| self.kind.owns(s)) {
                 Some(site) => vec![format!(
                     "{} link: the track, or every track of the playlist",
                     site.name()
                 )],
-                None => vec![OTHER_LINK.to_string()],
+                None => vec![self.kind.other_link().to_string()],
             };
         }
-        Site::SEARCHED
+        self.kind
+            .searched()
             .iter()
             .map(|site| format!("{}: {text}", site.name()))
             .collect()
@@ -389,9 +379,9 @@ impl SearchSource for YtDlp {
         self.pass_deno();
         let text = query.text.trim();
         let link = opendj_plugins::is_web_url(text) && query.songs.is_empty();
-        let site = search::link_site(text);
+        let site = search::link_site(text).filter(|&s| self.kind.owns(s));
         if link && site.is_none() {
-            return Err(PluginError::Network(OTHER_LINK.into()));
+            return Err(PluginError::Network(self.kind.other_link().into()));
         }
         let Some(program) = self.tool.program() else {
             return Err(PluginError::Network(self.line()));
@@ -399,8 +389,13 @@ impl SearchSource for YtDlp {
         let search = if !query.songs.is_empty() {
             Search {
                 sites: vec![(
-                    Site::YouTube,
-                    search::spawn_songs(&program, &query.songs, &query.skip),
+                    self.kind.searched()[0],
+                    search::spawn_songs(
+                        &program,
+                        self.kind.searched()[0],
+                        &query.songs,
+                        &query.skip,
+                    ),
                 )],
                 songs: true,
             }
@@ -411,7 +406,9 @@ impl SearchSource for YtDlp {
             }
         } else {
             Search {
-                sites: Site::SEARCHED
+                sites: self
+                    .kind
+                    .searched()
                     .iter()
                     .map(|&site| (site, search::spawn(&program, site, text)))
                     .collect(),
@@ -548,9 +545,14 @@ impl SearchSource for YtDlp {
             _ => None,
         };
         let mut page = page(&state, &self.deno.state(), broken, SystemTime::now());
+        if !self.kind.wants_deno() {
+            page.sections[0]
+                .rows
+                .retain(|(label, _)| !label.starts_with("Deno"));
+        }
         page.sections[0]
             .rows
-            .push(("Premium / Go+".to_string(), premium_line(&self.premium)));
+            .push((self.kind.plan().to_string(), premium_line(&self.premium)));
         Some(page)
     }
 }
@@ -598,7 +600,7 @@ mod tests {
     fn says_how_premium_stands() {
         assert!(premium_line(&Ok(None)).contains("128 kbps"));
         assert!(premium_line(&Ok(Some("safari".into()))).contains("safari"));
-        let mut y = YtDlp::new();
+        let mut y = YtDlp::new(Kind::YouTube);
         y.premium = premium::browser("netscape");
         assert!(y.line().contains("isn't a browser"));
     }
@@ -613,15 +615,12 @@ mod tests {
 
     #[test]
     fn describes_a_search() {
-        let y = YtDlp::new();
+        let y = YtDlp::new(Kind::YouTube);
         let q = SourceQuery {
             text: "Bonobo - Kerala".into(),
             ..Default::default()
         };
-        assert_eq!(
-            y.describe(&q),
-            vec!["YouTube: Bonobo - Kerala", "SoundCloud: Bonobo - Kerala"]
-        );
+        assert_eq!(y.describe(&q), vec!["YouTube: Bonobo - Kerala"]);
         assert!(y.describe(&SourceQuery::default()).is_empty());
         let link = SourceQuery {
             text: "https://www.youtube.com/watch?v=x".into(),
@@ -635,7 +634,15 @@ mod tests {
             text: "https://example.com/x".into(),
             ..Default::default()
         };
-        assert_eq!(y.describe(&other), vec![OTHER_LINK]);
+        assert_eq!(y.describe(&other), vec![Kind::YouTube.other_link()]);
+        let soundcloud_link = SourceQuery {
+            text: "https://soundcloud.com/a/b".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            y.describe(&soundcloud_link),
+            vec![Kind::YouTube.other_link()]
+        );
         let songs = SourceQuery {
             text: "Friday".into(),
             songs: vec!["A - B".into(), "C - D".into()],
@@ -645,6 +652,33 @@ mod tests {
             y.describe(&songs),
             vec!["Each of the 2 songs of Friday, on YouTube"]
         );
+        let sc = YtDlp::new(Kind::SoundCloud);
+        assert_eq!(sc.describe(&q), vec!["SoundCloud: Bonobo - Kerala"]);
+        let ht = SourceQuery {
+            text: "https://hearthis.at/dj/mix/".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            sc.describe(&ht),
+            vec!["hearthis.at link: the track, or every track of the playlist"]
+        );
+        assert_eq!(
+            sc.describe(&songs),
+            vec!["Each of the 2 songs of Friday, on SoundCloud"]
+        );
+    }
+
+    #[test]
+    fn soundcloud_has_no_deno_setting() {
+        let keys = |k| {
+            YtDlp::new(k)
+                .settings()
+                .iter()
+                .map(|s| s.key)
+                .collect::<Vec<_>>()
+        };
+        assert!(keys(Kind::YouTube).contains(&"deno"));
+        assert!(!keys(Kind::SoundCloud).contains(&"deno"));
     }
 
     #[test]

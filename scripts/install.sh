@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the yt-dlp add-on and puts it in openDJ's add-ons folder, where
+# Builds the yt-dlp add-on (a YouTube and a SoundCloud source) and puts them in openDJ's add-ons folder, where
 # openDJ finds it the next time it starts. Your openDJ isn't rebuilt.
 #
 #   scripts/install.sh
@@ -28,7 +28,7 @@ esac
 target=${CARGO_TARGET_DIR:-target}
 export CARGO_TARGET_DIR="$target"
 if [ -n "${OPENDJ_PLUGINS:-}" ]; then
-  cargo build --release --bin opendj-addon-ytdlp \
+  cargo build --release --bin opendj-addon-ytdlp --bin opendj-addon-soundcloud \
     --config "patch.\"https://github.com/openwave-studio/opendj\".opendj-plugins.path=\"$OPENDJ_PLUGINS\""
 else
   # The add-on follows openDJ's main branch, which Cargo.lock would
@@ -36,12 +36,14 @@ else
   if [ -f Cargo.lock ]; then
     cargo update -p opendj-plugins || true
   fi
-  cargo build --release --bin opendj-addon-ytdlp
+  cargo build --release --bin opendj-addon-ytdlp --bin opendj-addon-soundcloud
 fi
 
 mkdir -p "$config/addons"
 # Copy then rename, so an openDJ that's running never sees half a file.
-cp "$target/release/opendj-addon-ytdlp" "$config/addons/.opendj-addon-ytdlp.new"
-mv "$config/addons/.opendj-addon-ytdlp.new" "$config/addons/opendj-addon-ytdlp"
+for bin in opendj-addon-ytdlp opendj-addon-soundcloud; do
+  cp "$target/release/$bin" "$config/addons/.$bin.new"
+  mv "$config/addons/.$bin.new" "$config/addons/$bin"
+done
 echo "Installed in $config/addons. Restart openDJ to load it."
 
