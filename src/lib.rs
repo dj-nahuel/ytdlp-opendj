@@ -15,12 +15,14 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use opendj_plugins::source::{
-    DownloadUpdate, Found, SearchSource, Snapshot, SourceInfo, SourceQuery, StatusPage,
+    DownloadUpdate, Found, Progress, SearchSource, Snapshot, SourceInfo, SourceQuery, StatusPage,
     StatusSection,
 };
 use opendj_plugins::{Manifest, Plugin, PluginConfig, PluginError, Setting, SettingKind};
 
+pub mod deno;
 pub mod download;
+pub mod health;
 pub mod preview;
 pub mod search;
 pub mod tags;
@@ -29,7 +31,9 @@ pub mod tool;
 #[cfg(all(test, unix))]
 mod testutil;
 
+use deno::Deno;
 use download::Downloads;
+use health::Health;
 use search::{Shared, Site};
 use tool::{State, Tool};
 
@@ -65,6 +69,12 @@ pub struct YtDlp {
     next: u64,
     downloads: Downloads,
     preview: Option<preview::Preview>,
+    /// The site of the result being heard.
+    preview_site: Option<Site>,
+    deno: Deno,
+    /// Whether to fetch Deno for full YouTube support.
+    use_deno: bool,
+    health: Health,
 }
 
 impl Default for YtDlp {
@@ -83,12 +93,35 @@ impl YtDlp {
             next: 0,
             downloads: Downloads::default(),
             preview: None,
+            preview_site: None,
+            deno: Deno::default(),
+            use_deno: true,
+            health: Health::default(),
         }
     }
 
-    /// A line on how yt-dlp stands, for Settings and the panel.
+    /// A line on how yt-dlp stands, for Settings and the panel: a broken
+    /// site first.
     fn line(&self) -> String {
-        line(&self.tool.state())
+        let state = self.tool.state();
+        let version = match &state {
+            State::Ready(r) => r.version.as_str(),
+            _ => "",
+        };
+        self.health.line(version).unwrap_or_else(|| line(&state))
+    }
+
+    /// Gives every later yt-dlp run Deno, once it's there.
+    fn pass_deno(&self) {
+        tool::set_extra_args(self.deno.args());
+    }
+
+    /// A failure on `site`: when it looks like the site broke yt-dlp, says
+    /// so and looks for a newer yt-dlp now.
+    fn failed(&mut self, site: Site, error: &str) {
+        if self.health.failed(site, error) && self.update {
+            self.tool.check_now(&self.dir);
+        }
     }
 }
 
@@ -106,8 +139,24 @@ pub fn line(state: &State) -> String {
     }
 }
 
-/// The add-on's page in its panel: which yt-dlp it runs.
-pub fn page(state: &State, now: SystemTime) -> StatusPage {
+/// A line on Deno.
+pub fn deno_line(state: &deno::State) -> String {
+    match state {
+        deno::State::Off => "Off: some YouTube videos may fail".into(),
+        deno::State::Fetching => "Downloading (about 45 MB)…".into(),
+        deno::State::Ready(_) => "Ready".into(),
+        deno::State::Failed(why) => format!("Not available: {why}"),
+    }
+}
+
+/// The add-on's page in its panel: which yt-dlp it runs, with Deno, and
+/// what seems broken.
+pub fn page(
+    state: &State,
+    deno: &deno::State,
+    broken: Option<String>,
+    now: SystemTime,
+) -> StatusPage {
     let mut rows = Vec::new();
     if let State::Ready(r) = state {
         rows.push(("Version".to_string(), r.version.clone()));
@@ -124,15 +173,17 @@ pub fn page(state: &State, now: SystemTime) -> StatusPage {
         ));
         rows.push(("Program".to_string(), r.path.display().to_string()));
     }
+    rows.push(("Deno (full YouTube)".to_string(), deno_line(deno)));
     StatusPage {
         title: "yt-dlp".into(),
         line: match state {
+            State::Ready(_) if broken.is_some() => "Site broken, update pending".into(),
             State::Ready(r) => r.version.clone(),
             State::Fetching => "Downloading…".into(),
             State::Failed(_) => "Not available".into(),
             State::Idle => String::new(),
         },
-        note: line(state),
+        note: broken.unwrap_or_else(|| line(state)),
         sections: vec![StatusSection {
             heading: String::new(),
             rows,
@@ -222,6 +273,13 @@ impl Plugin for YtDlp {
                  yt-dlp stops finding things.",
             ),
             Setting::new(
+                "deno",
+                SettingKind::Switch(true),
+                "Full YouTube support",
+                "Downloads Deno (about 45 MB), which yt-dlp needs to answer YouTube's player \
+                 checks. Without it, some videos fail or come only in formats openDJ can't play.",
+            ),
+            Setting::new(
                 // openDJ's `source::DOWNLOAD_FOLDER`.
                 "download_folder",
                 SettingKind::Folder,
@@ -243,7 +301,10 @@ impl Plugin for YtDlp {
             self.dir = dir.clone();
         }
         self.update = config.is_on("update", true);
+        self.use_deno = config.is_on("deno", true);
         self.tool.ensure(&self.dir, self.update);
+        self.deno.ensure(&self.dir, self.use_deno, self.update);
+        self.pass_deno();
     }
 }
 
@@ -291,6 +352,7 @@ impl SearchSource for YtDlp {
     fn start(&mut self, query: &SourceQuery) -> Result<String, PluginError> {
         // Also a chance to pick up a day-old yt-dlp's update.
         self.tool.ensure(&self.dir, self.update);
+        self.pass_deno();
         let text = query.text.trim();
         let link = opendj_plugins::is_web_url(text) && query.songs.is_empty();
         let site = search::link_site(text);
@@ -333,11 +395,28 @@ impl SearchSource for YtDlp {
             .searches
             .get(id)
             .ok_or_else(|| PluginError::Network("This search ended; search again.".into()))?;
-        Ok(if search.songs {
+        let snap = if search.songs {
             songs_snapshot(&search.sites[0].1)
         } else {
             snapshot(&search.sites)
-        })
+        };
+        // How each site did, for spotting one that broke yt-dlp.
+        let outcomes: Vec<(Site, bool, Option<String>)> = search
+            .sites
+            .iter()
+            .map(|(site, s)| {
+                let r = s.lock().unwrap();
+                (*site, !r.items.is_empty(), r.error.clone())
+            })
+            .collect();
+        for (site, found, error) in outcomes {
+            if found {
+                self.health.worked(site);
+            } else if let Some(e) = error {
+                self.failed(site, &e);
+            }
+        }
+        Ok(snap)
     }
 
     fn stop(&mut self, id: &str) {
@@ -352,14 +431,27 @@ impl SearchSource for YtDlp {
         self.downloads
             .add(items, dir)
             .map_err(PluginError::Network)?;
+        self.pass_deno();
         self.downloads.pump(self.tool.program().as_deref());
         Ok(())
     }
 
     fn progress(&mut self) -> Vec<DownloadUpdate> {
         // Downloads asked for while yt-dlp was still arriving start now.
+        self.pass_deno();
         self.downloads.pump(self.tool.program().as_deref());
-        self.downloads.progress()
+        let updates = self.downloads.progress();
+        for u in &updates {
+            let Some((site, _)) = download::source(&u.key) else {
+                continue;
+            };
+            match &u.progress {
+                Progress::Done(_) => self.health.worked(site),
+                Progress::Failed(why) => self.failed(site, why),
+                _ => {}
+            }
+        }
+        updates
     }
 
     fn notes(&mut self) -> Vec<(String, String)> {
@@ -386,17 +478,27 @@ impl SearchSource for YtDlp {
             .tool
             .program()
             .ok_or_else(|| PluginError::Network(self.line()))?;
+        self.pass_deno();
         let p = preview::Preview::start(&program, &item.key, &self.dir.join("preview"))
             .map_err(PluginError::Network)?;
         self.preview = Some(p);
+        self.preview_site = download::source(&item.key).map(|(site, _)| site);
         Ok(())
     }
 
     fn preview_file(&mut self) -> Result<Option<PathBuf>, PluginError> {
-        match self.preview.as_mut() {
-            Some(p) => p.file().map_err(PluginError::Network),
+        let result = match self.preview.as_mut() {
+            Some(p) => p.file(),
             None => Ok(None),
+        };
+        if let Some(site) = self.preview_site {
+            match &result {
+                Ok(Some(_)) => self.health.worked(site),
+                Err(why) => self.failed(site, why),
+                Ok(None) => {}
+            }
         }
+        result.map_err(PluginError::Network)
     }
 
     fn stop_preview(&mut self) {
@@ -406,7 +508,12 @@ impl SearchSource for YtDlp {
     }
 
     fn status(&mut self) -> Option<StatusPage> {
-        Some(page(&self.tool.state(), SystemTime::now()))
+        let state = self.tool.state();
+        let broken = match &state {
+            State::Ready(r) => self.health.line(&r.version),
+            _ => None,
+        };
+        Some(page(&state, &self.deno.state(), broken, SystemTime::now()))
     }
 }
 
@@ -440,12 +547,12 @@ mod tests {
     #[test]
     fn page_lists_version_and_updates() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(7200);
-        let p = page(&ready(false, None), now);
+        let p = page(&ready(false, None), &deno::State::Off, None, now);
         assert_eq!(p.line, "2025.11.12");
         let rows = &p.sections[0].rows;
         assert_eq!(rows[0], ("Version".into(), "2025.11.12".into()));
         assert_eq!(rows[1].1, "Daily · last checked 2 h ago");
-        let own = page(&ready(true, None), now);
+        let own = page(&ready(true, None), &deno::State::Off, None, now);
         assert!(own.sections[0].rows[1].1.contains("not updated"));
     }
 

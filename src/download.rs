@@ -6,13 +6,12 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 
 use opendj_plugins::source::{DownloadUpdate, Found, Progress};
 
 use crate::search::Site;
-use crate::tool::hide_window;
 
 /// Downloads running at once.
 pub const AT_ONCE: usize = 3;
@@ -345,12 +344,11 @@ fn start(job: &mut Job, program: &Path) {
         return;
     }
     let base = free_base(&job.dir, &base_name(&job.item));
-    let mut cmd = Command::new(program);
+    let mut cmd = crate::tool::command(program);
     cmd.args(args(job.site, &job.url, &job.dir, &base))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    hide_window(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {

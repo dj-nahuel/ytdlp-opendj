@@ -20,6 +20,8 @@ const LATEST: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download"
 const SUMS: &str = "SHA2-256SUMS";
 /// How often to look for a newer yt-dlp.
 pub const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often a site's breakage may set off a check for a newer yt-dlp.
+const FORCE_EVERY: Duration = Duration::from_secs(60 * 60);
 /// Where the last check is remembered, in the add-on's folder.
 const CHECKED_FILE: &str = "yt-dlp-checked";
 /// yt-dlp builds are about 35 MB; anything far bigger isn't one.
@@ -102,6 +104,8 @@ pub struct Ready {
 pub struct Tool {
     state: Arc<Mutex<State>>,
     busy: Arc<Mutex<bool>>,
+    /// When a check was last forced by [`Tool::check_now`].
+    forced: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl Default for Tool {
@@ -109,6 +113,7 @@ impl Default for Tool {
         Self {
             state: Arc::new(Mutex::new(State::Idle)),
             busy: Arc::new(Mutex::new(false)),
+            forced: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -130,6 +135,23 @@ impl Tool {
     /// `update` is on and a day has passed. Returns at once; the work runs
     /// on a thread, one at a time.
     pub fn ensure(&self, dir: &Path, update: bool) {
+        self.start(dir, update, false);
+    }
+
+    /// Looks for a newer yt-dlp now, whatever the day's check said: for
+    /// when a site seems to have broken this one. At most once an hour.
+    pub fn check_now(&self, dir: &Path) {
+        {
+            let mut last = self.forced.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < FORCE_EVERY) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        self.start(dir, true, true);
+    }
+
+    fn start(&self, dir: &Path, update: bool, force: bool) {
         {
             let mut busy = self.busy.lock().unwrap();
             if *busy {
@@ -140,7 +162,7 @@ impl Tool {
         let this = self.clone();
         let dir = dir.to_path_buf();
         std::thread::spawn(move || {
-            this.run(&dir, update);
+            this.run(&dir, update, force);
             *this.busy.lock().unwrap() = false;
         });
     }
@@ -149,7 +171,7 @@ impl Tool {
         *self.state.lock().unwrap() = state;
     }
 
-    fn run(&self, dir: &Path, update: bool) {
+    fn run(&self, dir: &Path, update: bool, force: bool) {
         if let Some(own) = std::env::var_os("OPENDJ_YTDLP_BIN") {
             let path = PathBuf::from(own);
             self.set(match version(&path) {
@@ -183,7 +205,7 @@ impl Tool {
                 checked,
                 update_error: None,
             }));
-            if !update || !due(checked, SystemTime::now()) {
+            if !update || !(force || due(checked, SystemTime::now())) {
                 return;
             }
         } else {
@@ -240,7 +262,7 @@ fn latest_sums() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn get_bytes(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn get_bytes(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     let mut response = agent()
         .get(url)
         .call()
@@ -268,11 +290,21 @@ fn fetch(name: &str, want: &str, path: &Path) -> Result<(), String> {
             "the downloaded {name} doesn't match its SHA-256, so it isn't used"
         ));
     }
+    install(&bytes, path)
+}
+
+/// Writes a program to `path`: beside it first, then moved, so one that's
+/// running is never half replaced.
+pub(crate) fn install(bytes: &[u8], path: &Path) -> Result<(), String> {
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let tmp = dir.join(format!(".{name}.new"));
     let mut file = std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    file.write_all(&bytes)
+    file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| format!("{}: {e}", tmp.display()))?;
     drop(file);
@@ -301,6 +333,23 @@ pub fn version(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
+/// Arguments given to every yt-dlp run, such as where Deno is.
+static EXTRA_ARGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Sets the arguments every later yt-dlp run gets first.
+pub fn set_extra_args(args: Vec<String>) {
+    *EXTRA_ARGS.lock().unwrap() = args;
+}
+
+/// A yt-dlp run of `program`: no console window, and the add-on's own
+/// arguments (see [`set_extra_args`]) before the caller's.
+pub fn command(program: &Path) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(EXTRA_ARGS.lock().unwrap().iter());
+    hide_window(&mut cmd);
+    cmd
+}
+
 /// No console window flashing up on Windows when yt-dlp runs.
 pub fn hide_window(cmd: &mut Command) {
     #[cfg(windows)]
@@ -314,18 +363,24 @@ pub fn hide_window(cmd: &mut Command) {
 }
 
 fn read_checked(dir: &Path) -> Option<SystemTime> {
-    let secs: u64 = std::fs::read_to_string(dir.join(CHECKED_FILE))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
+    read_time(&dir.join(CHECKED_FILE))
+}
+
+pub(crate) fn read_time(file: &Path) -> Option<SystemTime> {
+    let secs: u64 = std::fs::read_to_string(file).ok()?.trim().parse().ok()?;
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
 }
 
 fn write_checked(dir: &Path, when: SystemTime) {
+    write_time(&dir.join(CHECKED_FILE), when);
+}
+
+pub(crate) fn write_time(file: &Path, when: SystemTime) {
     if let Ok(d) = when.duration_since(SystemTime::UNIX_EPOCH) {
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(dir.join(CHECKED_FILE), d.as_secs().to_string());
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(file, d.as_secs().to_string());
     }
 }
 
@@ -388,14 +443,14 @@ mod tests {
     fn fetches_yt_dlp_from_github() {
         let dir = std::env::temp_dir().join(format!("ytdlp-opendj-live-{}", std::process::id()));
         let tool = Tool::default();
-        tool.run(&dir, true);
+        tool.run(&dir, true, false);
         let State::Ready(r) = tool.state() else {
             panic!("{:?}", tool.state());
         };
         assert!(!r.version.is_empty());
         assert!(r.checked.is_some());
         // A second run within the day doesn't fetch again.
-        tool.run(&dir, true);
+        tool.run(&dir, true, false);
         assert!(matches!(tool.state(), State::Ready(_)));
         let _ = std::fs::remove_dir_all(&dir);
     }

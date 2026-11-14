@@ -21,8 +21,8 @@ The add-on is being built in steps:
 | 3 | Download audio into `Downloaded/YouTube` | done |
 | 4 | Pasted links and "Add to Downloads", hearthis.at | done |
 | 5 | Hear a result before downloading | done |
-| 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | next |
-| 7 | YouTube Premium sign-in for 256 kbps audio | |
+| 6 | Full YouTube support (Deno) and a clear message when YouTube breaks yt-dlp | done |
+| 7 | YouTube Premium sign-in for 256 kbps audio | next |
 
 Paste a YouTube, YouTube Music, SoundCloud or hearthis.at link into the
 search box to list that track, or every track of a playlist or set (up to
@@ -58,6 +58,24 @@ set to its path. That one is never replaced.
 
 yt-dlp is public domain (Unlicense); its ready-made builds contain GPLv3+
 code. It runs as a separate program, and openDJ never links it.
+
+## Deno
+
+YouTube now hides its audio behind JavaScript puzzles that yt-dlp solves
+with a JavaScript runtime. Without one, some videos fail or come only in
+formats openDJ can't play. So the add-on also fetches
+[Deno](https://github.com/denoland/deno/releases) (about 45 MB), checks it
+against the release's SHA-256, and hands it to yt-dlp. It looks for a newer
+Deno once a day along with yt-dlp. Turn it off with **Full YouTube support**
+in **Settings → YouTube**, or set `OPENDJ_DENO_BIN` to use your own.
+
+## When YouTube breaks yt-dlp
+
+YouTube changes its player every few weeks, and searches and downloads
+then fail until yt-dlp catches up, usually within days. When the add-on
+sees the errors that mean this (not a single missing video), its panel and
+Settings say so in one line, and it looks for a newer yt-dlp every hour
+until the site works again.
 
 ## Installing it
 
