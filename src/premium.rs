@@ -70,33 +70,16 @@ pub fn args(site: Site) -> Vec<String> {
     }
 }
 
-/// The Downloads list's note for a finished download from `site`.
+/// The quality the Downloads list shows for a finished download from
+/// `site`: the bitrate the site actually sent.
 pub fn note(site: Site, picked: &Picked) -> Option<String> {
-    let signed_in = signed_in();
-    match site {
-        Site::YouTube => {
-            let kbps = kbps(&picked.format)?;
-            Some(match (kbps, signed_in) {
-                (256, _) => "256 kbps (Premium)".into(),
-                (k, true) => {
-                    format!("{k} kbps: YouTube didn't offer Premium's 256 kbps for this one")
-                }
-                (k, false) => format!("{k} kbps"),
-            })
-        }
+    let kbps = match site {
+        Site::YouTube => kbps(&picked.format)?,
         // The artist's own file says nothing about a stream's bitrate.
-        Site::SoundCloud if picked.format != "download" => {
-            let kbps = picked.abr?.round() as u32;
-            Some(match (kbps >= 200, signed_in) {
-                (true, _) => format!("{kbps} kbps (Go+)"),
-                (false, true) => {
-                    format!("{kbps} kbps: SoundCloud didn't offer Go+ quality for this one")
-                }
-                (false, false) => format!("{kbps} kbps"),
-            })
-        }
-        _ => None,
-    }
+        Site::SoundCloud if picked.format != "download" => picked.abr?.round() as u32,
+        _ => return None,
+    };
+    Some(format!("{kbps} kbps"))
 }
 
 /// Why yt-dlp couldn't read the sign-in, in words, when that's what
@@ -181,18 +164,12 @@ mod tests {
         assert!(args(Site::HearThis).is_empty());
         assert_eq!(
             note(Site::YouTube, &p("141", Some(256.0))).as_deref(),
-            Some("256 kbps (Premium)")
+            Some("256 kbps")
         );
-        assert!(note(Site::YouTube, &p("140", None))
-            .unwrap()
-            .contains("didn't offer"));
         assert_eq!(
             note(Site::SoundCloud, &p("hls_aac_256k", Some(256.0))).as_deref(),
-            Some("256 kbps (Go+)")
+            Some("256 kbps")
         );
-        assert!(note(Site::SoundCloud, &p("http_mp3_128", Some(128.0)))
-            .unwrap()
-            .contains("Go+ quality"));
         assert_eq!(note(Site::SoundCloud, &p("download", None)), None);
         assert_eq!(
             explain("[Errno 1] Operation not permitted: '/Users/x/Library/Cookies/Cookies.binarycookies'")

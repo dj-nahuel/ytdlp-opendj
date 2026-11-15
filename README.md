@@ -122,9 +122,9 @@ use a browser other than the default, start openDJ with
 `OPENDJ_YTDLP_BROWSER` set to its name (`safari`, `chrome`, `firefox`,
 `brave`, `edge`, `opera`, `vivaldi`).
 
-- The Downloads list says each download's bitrate. The sites don't always
-  offer 256 kbps, even signed in; then the download comes at 128 kbps and
-  the list says so. A SoundCloud artist's own download file still comes
+- Search results guess 128 kbps, since searches are signed out. Once a
+  download finishes, the Downloads list's Quality shows what the site
+  actually sent. The sites don't always offer 256 kbps, even signed in. A SoundCloud artist's own download file still comes
   first.
 - Downloading signed in is against both sites' terms and could get the
   account flagged.
